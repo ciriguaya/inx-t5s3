@@ -22,6 +22,7 @@
 
 #include <cstdint>
 #include <string>
+#include <utility>
 #include <vector>
 
 class StarDictLookup {
@@ -66,6 +67,10 @@ class StarDictLookup {
   };
 
   struct DefCacheEntry {
+    DefCacheEntry() = default;
+    DefCacheEntry(std::string key, std::string text, bool wasTruncated)
+        : keyLower(std::move(key)), definition(std::move(text)), truncated(wasTruncated) {}
+
     std::string keyLower;
     std::string definition;
     bool truncated = false;
