@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <cctype>
+#include <cstdlib>
 #include <cstring>
 
 #include <esp_task_wdt.h>
@@ -36,61 +37,237 @@ bool isGeneralPunctuationAt(const unsigned char* b, const size_t i, const size_t
   return i + 2 < end && b[i] == 0xE2 && (b[i + 1] == 0x80 || b[i + 1] == 0x81);
 }
 
-/** Generates candidate base forms for a possibly-inflected English word (possessive, plural,
- *  past tense -ed, gerund -ing), so a form absent from the dictionary (e.g. "running", "jumped",
- *  "books") can still resolve to its base entry ("run", "jump", "book"). Heuristic suffix-stripping,
- *  not a full stemmer - callers try each candidate as an exact lookup and take the first hit, so
- *  over-generating (a few wrong candidates) is harmless as long as the right one is in the list. */
-std::vector<std::string> stemCandidates(const std::string& lower) {
-  std::vector<std::string> out;
-  const size_t n = lower.size();
+/** æ/œ and vowel macrons so a page word like iustitiæ matches iustitiae / iustitia in the index. */
+std::string foldLatinOrthography(const std::string& s) {
+  std::string out;
+  out.reserve(s.size() + 4);
+  for (size_t i = 0; i < s.size();) {
+    const unsigned char c = static_cast<unsigned char>(s[i]);
+    const unsigned char d = (i + 1 < s.size()) ? static_cast<unsigned char>(s[i + 1]) : 0;
+    if (c == 0xC3 && i + 1 < s.size()) {
+      if (d == 0xA6 || d == 0x86) {  // æ Æ
+        out += "ae";
+        i += 2;
+        continue;
+      }
+    }
+    if (c == 0xC5 && i + 1 < s.size()) {
+      if (d == 0x93 || d == 0x92) {  // œ Œ
+        out += "oe";
+        i += 2;
+        continue;
+      }
+      if (d == 0x8D || d == 0x8C) {  // ō Ō
+        out.push_back('o');
+        i += 2;
+        continue;
+      }
+      if (d == 0xAB || d == 0xAA) {  // ū Ū
+        out.push_back('u');
+        i += 2;
+        continue;
+      }
+    }
+    if (c == 0xC4 && i + 1 < s.size()) {
+      if (d == 0x81 || d == 0x80) {  // ā Ā
+        out.push_back('a');
+        i += 2;
+        continue;
+      }
+      if (d == 0x93 || d == 0x92) {  // ē Ē
+        out.push_back('e');
+        i += 2;
+        continue;
+      }
+      if (d == 0xAB || d == 0xAA) {  // ī Ī
+        out.push_back('i');
+        i += 2;
+        continue;
+      }
+    }
+    out.push_back(s[i]);
+    ++i;
+  }
+  return out;
+}
+
+/** l'/d'/… and curly-quote elision. Punctuation, not morphology — the remainder is a different
+ *  .idx region than the contracted form. */
+std::string stripClitic(const std::string& word) {
+  auto starts = [&](const char* prefix) {
+    const size_t n = std::strlen(prefix);
+    return word.size() > n + 1 && word.compare(0, n, prefix) == 0 &&
+           std::isalpha(static_cast<unsigned char>(word[n])) != 0;
+  };
+  static const char* kAscii[] = {"l'", "d'", "n'", "m'", "t'", "s'", "c'", "j'", "qu'"};
+  for (const char* prefix : kAscii) {
+    if (starts(prefix)) {
+      return word.substr(std::strlen(prefix));
+    }
+  }
+  constexpr const char* kRightQuote = "\xE2\x80\x99";  // ’
+  constexpr const char* kLeftQuote = "\xE2\x80\x98";   // ‘
+  auto afterUtf8Quote = [&](const char* quote) -> std::string {
+    const size_t qn = std::strlen(quote);
+    if (word.size() > 1 + qn && word.compare(1, qn, quote) == 0 &&
+        std::isalpha(static_cast<unsigned char>(word[0])) != 0 &&
+        std::isalpha(static_cast<unsigned char>(word[1 + qn])) != 0) {
+      return word.substr(1 + qn);
+    }
+    if (word.size() > 2 + qn && word.compare(0, 2, "qu") == 0 && word.compare(2, qn, quote) == 0 &&
+        std::isalpha(static_cast<unsigned char>(word[2 + qn])) != 0) {
+      return word.substr(2 + qn);
+    }
+    return "";
+  };
+  const std::string afterRight = afterUtf8Quote(kRightQuote);
+  if (!afterRight.empty()) {
+    return afterRight;
+  }
+  const std::string afterLeft = afterUtf8Quote(kLeftQuote);
+  if (!afterLeft.empty()) {
+    return afterLeft;
+  }
+  size_t cut = std::string::npos;
+  for (size_t i = 0; i < word.size(); ++i) {
+    if (word[i] == '\'') {
+      cut = i + 1;
+    } else if (i + 2 < word.size() && static_cast<unsigned char>(word[i]) == 0xE2 &&
+               static_cast<unsigned char>(word[i + 1]) == 0x80 &&
+               (static_cast<unsigned char>(word[i + 2]) == 0x98 ||
+                static_cast<unsigned char>(word[i + 2]) == 0x99)) {
+      cut = i + 3;
+    } else if (i + 1 < word.size() && static_cast<unsigned char>(word[i]) == 0xC2 &&
+               static_cast<unsigned char>(word[i + 1]) == 0xB4) {
+      cut = i + 2;
+    }
+  }
+  if (cut != std::string::npos && cut < word.size() &&
+      std::isalpha(static_cast<unsigned char>(word[cut])) != 0) {
+    return word.substr(cut);
+  }
+  return "";
+}
+
+/** Same English endings CrossPoint 1.5 uses. French/Latin inflections are resolved from the
+ *  sorted .idx neighborhood instead of a suffix table that can never be complete. */
+void addEnglishStems(const std::string& form, std::vector<std::string>& out) {
   auto add = [&](const std::string& s) {
-    if (s.size() >= 2) {
+    if (s.size() >= 2 && std::find(out.begin(), out.end(), s) == out.end()) {
+      out.push_back(s);
+    }
+  };
+  const size_t n = form.size();
+  if (n > 2 && form[n - 2] == '\'' && form[n - 1] == 's') {
+    add(form.substr(0, n - 2));
+  }
+  if (n > 4 && form.compare(n - 4, 4, "\xE2\x80\x99s") == 0) {
+    add(form.substr(0, n - 4));
+  }
+  if (n > 4 && form.compare(n - 3, 3, "ing") == 0) {
+    const std::string base = form.substr(0, n - 3);
+    add(base);
+    add(base + "e");
+    if (base.size() >= 3 && base[base.size() - 1] == base[base.size() - 2]) {
+      add(base.substr(0, base.size() - 1));
+    }
+  }
+  if (n > 3 && form.compare(n - 3, 3, "ied") == 0) {
+    add(form.substr(0, n - 3) + "y");
+  }
+  if (n > 3 && form.compare(n - 2, 2, "ed") == 0) {
+    const std::string base = form.substr(0, n - 2);
+    add(base);
+    add(base + "e");
+    if (base.size() >= 3 && base[base.size() - 1] == base[base.size() - 2]) {
+      add(base.substr(0, base.size() - 1));
+    }
+  }
+  if (n > 4 && form.compare(n - 3, 3, "ies") == 0) {
+    add(form.substr(0, n - 3) + "y");
+  }
+  if (n > 3 && form.compare(n - 2, 2, "es") == 0) {
+    add(form.substr(0, n - 2));
+  }
+  if (n > 2 && form[n - 1] == 's' && form[n - 2] != 's') {
+    add(form.substr(0, n - 1));
+  }
+}
+
+std::string mapLatinJToI(const std::string& lower) {
+  std::string out = lower;
+  for (char& c : out) {
+    if (c == 'j') {
+      c = 'i';
+    }
+  }
+  return out;
+}
+
+/** Higher is better. Inflected forms share a long prefix with a short leftover on each side
+ *  (iudicia/iudicium, omnia/omnis) or one is a prefix of the other (sonne/sonner). Derived
+ *  compounds (iudicia ⊂ iudiciarius) lose to the same-length lemma. */
+int inflectionScore(const std::string& query, const std::string& head) {
+  if (query == head) {
+    return 100000;
+  }
+  if (query.size() < 4 || head.size() < 4) {
+    return -1;
+  }
+  const size_t n = std::min(query.size(), head.size());
+  size_t lcp = 0;
+  while (lcp < n && query[lcp] == head[lcp]) {
+    ++lcp;
+  }
+  if (lcp < 3) {
+    return -1;
+  }
+  const size_t minLen = std::min(query.size(), head.size());
+  if (lcp * 3 < minLen * 2) {
+    return -1;
+  }
+  const int qRest = static_cast<int>(query.size() - lcp);
+  const int hRest = static_cast<int>(head.size() - lcp);
+  const int lenDiff = std::abs(static_cast<int>(query.size()) - static_cast<int>(head.size()));
+  const int lcpI = static_cast<int>(lcp);
+  if (qRest > 0 && hRest > 0) {
+    if (qRest > 4 || hRest > 4) {
+      return -1;
+    }
+    return 2000 + lcpI * 10 - (qRest + hRest) * 20 - lenDiff * 50;
+  }
+  const int rest = std::max(qRest, hRest);
+  if (rest == 0 || rest > 3) {
+    return -1;
+  }
+  return 1000 + lcpI * 10 - rest * 20 - lenDiff * 50;
+}
+
+std::vector<std::string> queryVariants(const std::string& lower, const bool includeEnglishStems) {
+  std::vector<std::string> out;
+  auto add = [&](const std::string& s) {
+    if (s.size() >= 2 && std::find(out.begin(), out.end(), s) == out.end()) {
       out.push_back(s);
     }
   };
 
-  if (n > 2 && lower[n - 2] == '\'' && lower[n - 1] == 's') {
-    add(lower.substr(0, n - 2));
-  }
-  if (n > 4 && lower.compare(n - 4, 4, "\xE2\x80\x99s") == 0) {
-    add(lower.substr(0, n - 4));
+  const std::string folded = foldLatinOrthography(lower);
+  add(folded);
+  const std::string asI = mapLatinJToI(folded);
+  add(asI);
+
+  const std::string declitic = stripClitic(folded);
+  add(declitic);
+  if (!declitic.empty()) {
+    add(mapLatinJToI(declitic));
   }
 
-  if (n > 4 && lower.compare(n - 3, 3, "ing") == 0) {
-    const std::string base = lower.substr(0, n - 3);
-    add(base);
-    add(base + "e");
-    if (base.size() >= 3 && base[base.size() - 1] == base[base.size() - 2]) {
-      add(base.substr(0, base.size() - 1));
+  if (includeEnglishStems) {
+    addEnglishStems(folded, out);
+    if (!declitic.empty()) {
+      addEnglishStems(declitic, out);
     }
   }
-
-  if (n > 3 && lower.compare(n - 3, 3, "ied") == 0) {
-    add(lower.substr(0, n - 3) + "y");
-  }
-
-  if (n > 3 && lower.compare(n - 2, 2, "ed") == 0) {
-    const std::string base = lower.substr(0, n - 2);
-    add(base);
-    add(base + "e");
-    if (base.size() >= 3 && base[base.size() - 1] == base[base.size() - 2]) {
-      add(base.substr(0, base.size() - 1));
-    }
-  }
-
-  if (n > 4 && lower.compare(n - 3, 3, "ies") == 0) {
-    add(lower.substr(0, n - 3) + "y");
-  }
-
-  if (n > 3 && lower.compare(n - 2, 2, "es") == 0) {
-    add(lower.substr(0, n - 2));
-  }
-
-  if (n > 2 && lower[n - 1] == 's' && lower[n - 2] != 's') {
-    add(lower.substr(0, n - 1));
-  }
-
   return out;
 }
 
@@ -118,6 +295,40 @@ constexpr uint32_t kQidxHeaderWords = 6;
 constexpr uint32_t kDefinitionHeapHeadroomBytes = 8 * 1024;
 
 }  // namespace
+
+std::vector<std::string> StarDictLookup::alternateForms(const std::string& queryWord) {
+  const std::string cleaned = stripSurroundingPunctuation(queryWord);
+  return queryVariants(toLowerCopy(cleaned), true);
+}
+
+namespace {
+
+void pushUnique(std::vector<std::string>& list, const std::string& s) {
+  if (s.empty()) {
+    return;
+  }
+  if (std::find(list.begin(), list.end(), s) == list.end()) {
+    list.push_back(s);
+  }
+}
+
+bool writeLe32(FsFile& file, const uint32_t value) {
+  return file.write(reinterpret_cast<const uint8_t*>(&value), 4) == 4;
+}
+
+bool readLe32(FsFile& file, uint32_t& value) {
+  return file.read(reinterpret_cast<uint8_t*>(&value), 4) == 4;
+}
+
+// Same layout as CrossPoint 1.5 .qidx, plus a flags word (version 2) for sort-order.
+constexpr uint32_t kQidxMagic = 0x58444951;  // "QIDX" little-endian
+constexpr uint32_t kQidxVersion = 2;
+constexpr uint32_t kQidxHeaderWords = 6;
+constexpr uint32_t kDefinitionHeapHeadroomBytes = 8 * 1024;
+
+}  // namespace
+
+constexpr uint32_t StarDictLookup::kMaxDefinitionBytes;
 
 // ---------------------------------------------------------------------------
 // IdxCursor - buffered sequential .idx access
@@ -244,8 +455,10 @@ void StarDictLookup::close() {
   // swap, not .clear() — sampleOffsets_ can be a few thousand uint32s; .clear() would keep capacity.
   std::vector<uint32_t>().swap(sampleOffsets_);
   std::vector<DefCacheEntry>().swap(defCache_);
+  std::string().swap(lastHitHeadword_);
   std::string().swap(folderPath_);
   std::string().swap(bookname_);
+  std::string().swap(lang_);
   std::string().swap(sameTypeSequence_);
   wordCount_ = 0;
   idxFileSize_ = 0;
@@ -281,6 +494,8 @@ bool StarDictLookup::parseIfo(const std::string& ifoPath) {
 
     if (key == "bookname") {
       bookname_ = value.c_str();
+    } else if (key == "lang") {
+      lang_ = value.c_str();
     } else if (key == "wordcount") {
       wordCount_ = static_cast<uint32_t>(value.toInt());
     } else if (key == "idxfilesize") {
@@ -561,8 +776,28 @@ int StarDictLookup::compareForSearch(const std::string& a, const std::string& aL
   return a.compare(b);
 }
 
+void StarDictLookup::collectSameWordHits(IdxCursor& cur, const std::string& wordLower,
+                                         std::vector<std::pair<uint64_t, uint32_t>>& outHits) {
+  static constexpr size_t kMaxSameWordHits = 6;
+  while (outHits.size() < kMaxSameWordHits && cur.position() < idxFileSize_) {
+    std::string entryWord;
+    uint64_t dictOffset = 0;
+    uint32_t dictSize = 0;
+    if (!readIdxEntry(cur, entryWord, dictOffset, dictSize)) {
+      break;
+    }
+    if (toLowerCopy(entryWord) != wordLower) {
+      break;
+    }
+    outHits.emplace_back(dictOffset, dictSize);
+  }
+}
+
 bool StarDictLookup::lookupViaSamples(const std::string& candidate, const std::string& candidateLower,
-                                      uint64_t& outDictOffset, uint32_t& outDictSize) {
+                                      std::vector<std::pair<uint64_t, uint32_t>>& outHits, std::string& outMatchedWord,
+                                      const bool allowFuzzy) {
+  outHits.clear();
+  outMatchedWord.clear();
   if (sampleOffsets_.empty()) {
     return false;
   }
@@ -592,12 +827,29 @@ bool StarDictLookup::lookupViaSamples(const std::string& candidate, const std::s
   }
 
   const uint32_t scanStart = sampleOffsets_[lo];
-  const uint32_t scanEnd = (lo + 1 < sampleOffsets_.size()) ? sampleOffsets_[lo + 1] : idxFileSize_;
+  const uint32_t windowEnd = (lo + 1 < sampleOffsets_.size()) ? sampleOffsets_[lo + 1] : idxFileSize_;
+  // Inflected forms sit next to the lemma; if the insertion point is on a sample boundary the
+  // lemma may be the first word of the next 256-entry window, so fuzzy scans one extra window.
+  const uint32_t fuzzyEnd =
+      allowFuzzy ? ((lo + 2 < sampleOffsets_.size()) ? sampleOffsets_[lo + 2] : idxFileSize_) : windowEnd;
   if (!cur.seek(scanStart)) {
     return false;
   }
 
-  while (cur.position() < scanEnd) {
+  const std::string candidateFolded = foldLatinOrthography(candidateLower);
+  int bestScore = -1;
+  std::string bestWord;
+  uint64_t bestOffset = 0;
+  uint32_t bestSize = 0;
+  uint32_t bestNextPos = 0;
+  uint32_t scanned = 0;
+
+  while (cur.position() < fuzzyEnd) {
+    if ((scanned & 0x3F) == 0) {
+      esp_task_wdt_reset();
+    }
+    ++scanned;
+
     std::string entryWord;
     uint64_t dictOffset = 0;
     uint32_t dictSize = 0;
@@ -606,20 +858,44 @@ bool StarDictLookup::lookupViaSamples(const std::string& candidate, const std::s
     }
     const std::string entryLower = toLowerCopy(entryWord);
     const int cmp = compareForSearch(entryWord, entryLower, candidate, candidateLower);
-    if (cmp == 0) {
-      outDictOffset = dictOffset;
-      outDictSize = dictSize;
+    const std::string entryFolded = foldLatinOrthography(entryLower);
+    if (cmp == 0 || entryFolded == candidateFolded) {
+      outHits.emplace_back(dictOffset, dictSize);
+      collectSameWordHits(cur, entryLower, outHits);
+      outMatchedWord = entryWord;
       return true;
     }
-    if (cmp > 0) {
-      break;
+    if (!allowFuzzy) {
+      if (cmp > 0 || cur.position() >= windowEnd) {
+        break;
+      }
+      continue;
+    }
+    const int score = inflectionScore(candidateFolded, entryFolded);
+    if (score > bestScore) {
+      bestScore = score;
+      bestWord = entryWord;
+      bestOffset = dictOffset;
+      bestSize = dictSize;
+      bestNextPos = cur.position();
     }
   }
-  return false;
+
+  if (!allowFuzzy || bestScore < 0) {
+    return false;
+  }
+
+  outHits.emplace_back(bestOffset, bestSize);
+  if (cur.seek(bestNextPos)) {
+    collectSameWordHits(cur, toLowerCopy(bestWord), outHits);
+  }
+  outMatchedWord = bestWord;
+  return true;
 }
 
 bool StarDictLookup::lookupViaLinearScan(const std::vector<std::string>& candidatesLower, std::string& outHitLower,
-                                         uint64_t& outDictOffset, uint32_t& outDictSize) {
+                                         std::vector<std::pair<uint64_t, uint32_t>>& outHits) {
+  outHits.clear();
   if (candidatesLower.empty()) {
     return false;
   }
@@ -657,8 +933,8 @@ bool StarDictLookup::lookupViaLinearScan(const std::vector<std::string>& candida
           bestLower = entryLower;
           if (bestPriority == 0) {
             outHitLower = bestLower;
-            outDictOffset = bestOffset;
-            outDictSize = bestSize;
+            outHits.emplace_back(bestOffset, bestSize);
+            collectSameWordHits(cur, bestLower, outHits);
             return true;
           }
         }
@@ -671,8 +947,7 @@ bool StarDictLookup::lookupViaLinearScan(const std::vector<std::string>& candida
     return false;
   }
   outHitLower = bestLower;
-  outDictOffset = bestOffset;
-  outDictSize = bestSize;
+  outHits.emplace_back(bestOffset, bestSize);
   return true;
 }
 
@@ -695,10 +970,62 @@ bool StarDictLookup::readDefinition(const uint64_t dictOffset, const uint32_t di
   return readN == static_cast<int>(readSize);
 }
 
+bool StarDictLookup::readConcatenatedDefinitions(const std::vector<std::pair<uint64_t, uint32_t>>& hits,
+                                                 std::string& outDefinition, bool* outTruncated) {
+  outDefinition.clear();
+  if (hits.empty()) {
+    return false;
+  }
+
+  std::vector<uint32_t> take;
+  take.reserve(hits.size());
+  uint32_t total = 0;
+  for (size_t i = 0; i < hits.size(); ++i) {
+    const uint32_t size = hits[i].second;
+    if (size == 0) {
+      continue;
+    }
+    if (total + size <= kMaxDefinitionBytes) {
+      take.push_back(size);
+      total += size;
+      continue;
+    }
+    if (take.empty()) {
+      take.push_back(kMaxDefinitionBytes);
+      total = kMaxDefinitionBytes;
+    }
+    break;
+  }
+  if (take.empty()) {
+    return false;
+  }
+
+  if (ESP.getMaxAllocHeap() < total + kDefinitionHeapHeadroomBytes) {
+    return readDefinition(hits[0].first, hits[0].second, outDefinition, outTruncated);
+  }
+
+  outDefinition.reserve(total);
+  for (size_t i = 0; i < take.size(); ++i) {
+    if (!dictFile_.seekSet(hits[i].first)) {
+      return false;
+    }
+    const size_t at = outDefinition.size();
+    outDefinition.resize(at + take[i]);
+    if (dictFile_.read(&outDefinition[at], take[i]) != static_cast<int>(take[i])) {
+      return false;
+    }
+  }
+  if (outTruncated) {
+    *outTruncated = take.size() < hits.size() || take[0] < hits[0].second;
+  }
+  return true;
+}
+
 bool StarDictLookup::cacheGet(const std::string& keyLower, std::string& outDefinition, bool* outTruncated) {
   for (size_t i = 0; i < defCache_.size(); ++i) {
     if (defCache_[i].keyLower == keyLower) {
       outDefinition = defCache_[i].definition;
+      lastHitHeadword_ = defCache_[i].hitHeadword;
       if (outTruncated) {
         *outTruncated = defCache_[i].truncated;
       }
@@ -714,10 +1041,12 @@ bool StarDictLookup::cacheGet(const std::string& keyLower, std::string& outDefin
   return false;
 }
 
-void StarDictLookup::cachePut(const std::string& keyLower, const std::string& definition, const bool truncated) {
+void StarDictLookup::cachePut(const std::string& keyLower, const std::string& definition, const std::string& hitHeadword,
+                             const bool truncated) {
   for (size_t i = 0; i < defCache_.size(); ++i) {
     if (defCache_[i].keyLower == keyLower) {
       defCache_[i].definition = definition;
+      defCache_[i].hitHeadword = hitHeadword;
       defCache_[i].truncated = truncated;
       if (i > 0) {
         DefCacheEntry hit = std::move(defCache_[i]);
@@ -730,12 +1059,22 @@ void StarDictLookup::cachePut(const std::string& keyLower, const std::string& de
   if (defCache_.size() >= kDefCacheSlots) {
     defCache_.pop_back();
   }
-  defCache_.insert(defCache_.begin(), DefCacheEntry{keyLower, definition, truncated});
+  defCache_.insert(defCache_.begin(), DefCacheEntry{keyLower, definition, hitHeadword, truncated});
 }
 
 bool StarDictLookup::lookup(const std::string& queryWord, std::string& outDefinition, bool* outTruncated) {
+  return lookupInternal(queryWord, outDefinition, outTruncated, true);
+}
+
+bool StarDictLookup::lookupExact(const std::string& queryWord, std::string& outDefinition, bool* outTruncated) {
+  return lookupInternal(queryWord, outDefinition, outTruncated, false);
+}
+
+bool StarDictLookup::lookupInternal(const std::string& queryWord, std::string& outDefinition, bool* outTruncated,
+                                    const bool allowStem) {
   if (!isOpen_) {
     Serial.printf("[%lu] [DICT] lookup('%s'): dictionary not open\n", millis(), queryWord.c_str());
+    lastHitHeadword_.clear();
     return false;
   }
 
@@ -743,6 +1082,7 @@ bool StarDictLookup::lookup(const std::string& queryWord, std::string& outDefini
   if (cleaned.empty()) {
     Serial.printf("[%lu] [DICT] lookup('%s'): empty after stripSurroundingPunctuation\n", millis(),
                   queryWord.c_str());
+    lastHitHeadword_.clear();
     return false;
   }
 
@@ -751,43 +1091,80 @@ bool StarDictLookup::lookup(const std::string& queryWord, std::string& outDefini
   // Cache is keyed by the cleaned lowercased query (not the stem that eventually hit) so the same
   // on-screen word always resolves instantly on re-lookup.
   if (cacheGet(lowerCleaned, outDefinition, outTruncated)) {
-    Serial.printf("[%lu] [DICT] lookup('%s'): cache hit\n", millis(), queryWord.c_str());
-    return true;
+    if (allowStem) {
+      Serial.printf("[%lu] [DICT] lookup('%s'): cache hit\n", millis(), queryWord.c_str());
+      return true;
+    }
+    const std::string hitLower = toLowerCopy(lastHitHeadword_);
+    if (hitLower == lowerCleaned || hitLower == toLowerCopy(stripSurroundingPunctuation(lastHitHeadword_))) {
+      Serial.printf("[%lu] [DICT] lookupExact('%s'): cache hit\n", millis(), queryWord.c_str());
+      return true;
+    }
   }
 
-  // Word forms to try, in priority order: as typed, lower, Title; then stems (lower + Title).
+  // Word forms to try, in priority order: as typed, lower, Title; then orthography / elision /
+  // English stems. French and Latin inflections are not guessed here — they are resolved from
+  // nearby .idx entries after these exact probes miss.
   std::vector<std::string> candidates;
-  candidates.reserve(12);
+  candidates.reserve(16);
   pushUnique(candidates, cleaned);
   pushUnique(candidates, lowerCleaned);
   pushUnique(candidates, toTitleCaseCopy(cleaned));
-  for (const std::string& stem : stemCandidates(lowerCleaned)) {
-    pushUnique(candidates, stem);
-    pushUnique(candidates, toTitleCaseCopy(stem));
+  for (const std::string& variant : queryVariants(lowerCleaned, allowStem)) {
+    pushUnique(candidates, variant);
+    pushUnique(candidates, toTitleCaseCopy(variant));
   }
 
   const unsigned long t0 = millis();
-  uint64_t dictOffset = 0;
-  uint32_t dictSize = 0;
+  std::vector<std::pair<uint64_t, uint32_t>> hits;
   bool found = false;
   std::string hitCandidate;
   const bool detectedCi = caseInsensitiveSort_;
 
-  auto tryCandidates = [&]() {
+  auto tryExact = [&]() {
     for (const std::string& candidate : candidates) {
       const std::string candidateLower = toLowerCopy(candidate);
-      if (lookupViaSamples(candidate, candidateLower, dictOffset, dictSize)) {
+      std::string matched;
+      if (lookupViaSamples(candidate, candidateLower, hits, matched, false)) {
         found = true;
-        hitCandidate = candidate;
+        hitCandidate = matched.empty() ? candidate : matched;
         return;
       }
     }
   };
 
-  tryCandidates();
+  auto tryFuzzy = [&]() {
+    std::vector<std::string> fuzzyQueries;
+    fuzzyQueries.reserve(4);
+    pushUnique(fuzzyQueries, cleaned);
+    pushUnique(fuzzyQueries, lowerCleaned);
+    const std::string folded = foldLatinOrthography(lowerCleaned);
+    pushUnique(fuzzyQueries, folded);
+    const std::string declitic = stripClitic(folded);
+    if (!declitic.empty()) {
+      pushUnique(fuzzyQueries, declitic);
+    }
+    for (const std::string& candidate : fuzzyQueries) {
+      const std::string candidateLower = toLowerCopy(candidate);
+      std::string matched;
+      if (lookupViaSamples(candidate, candidateLower, hits, matched, true)) {
+        found = true;
+        hitCandidate = matched.empty() ? candidate : matched;
+        return;
+      }
+    }
+  };
+
+  tryExact();
+  if (!found && allowStem) {
+    tryFuzzy();
+  }
   if (!found) {
     caseInsensitiveSort_ = !detectedCi;
-    tryCandidates();
+    tryExact();
+    if (!found && allowStem) {
+      tryFuzzy();
+    }
     if (found) {
       Serial.printf("[%lu] [DICT] lookup('%s'): hit after flipping sort order to %s (%lums)\n", millis(),
                     queryWord.c_str(), caseInsensitiveSort_ ? "case-insensitive" : "byte-order", millis() - t0);
@@ -809,7 +1186,7 @@ bool StarDictLookup::lookup(const std::string& queryWord, std::string& outDefini
       pushUnique(linearCandidates, toLowerCopy(c));
     }
     std::string hitLower;
-    if (lookupViaLinearScan(linearCandidates, hitLower, dictOffset, dictSize)) {
+    if (lookupViaLinearScan(linearCandidates, hitLower, hits)) {
       found = true;
       hitCandidate = hitLower;
     }
@@ -817,23 +1194,27 @@ bool StarDictLookup::lookup(const std::string& queryWord, std::string& outDefini
                   found ? "hit" : "miss", millis() - t1);
   }
 
-  if (!found) {
+  if (!found || hits.empty()) {
     Serial.printf("[%lu] [DICT] lookup('%s'): not in index (%lums)\n", millis(), queryWord.c_str(), millis() - t0);
+    lastHitHeadword_.clear();
     return false;
   }
 
-  Serial.printf("[%lu] [DICT] lookup('%s'): matched '%s', dictOffset=%llu dictSize=%u\n", millis(),
-                queryWord.c_str(), hitCandidate.c_str(), static_cast<unsigned long long>(dictOffset), dictSize);
+  Serial.printf("[%lu] [DICT] lookup('%s'): matched '%s', %u idx hit(s), dictOffset=%llu dictSize=%u\n", millis(),
+                queryWord.c_str(), hitCandidate.c_str(), static_cast<unsigned>(hits.size()),
+                static_cast<unsigned long long>(hits[0].first), hits[0].second);
 
   bool truncated = false;
-  if (!readDefinition(dictOffset, dictSize, outDefinition, &truncated)) {
+  if (!readConcatenatedDefinitions(hits, outDefinition, &truncated)) {
     Serial.printf("[%lu] [DICT] lookup('%s'): definition read failed\n", millis(), queryWord.c_str());
+    lastHitHeadword_.clear();
     return false;
   }
   if (outTruncated) {
     *outTruncated = truncated;
   }
-  cachePut(lowerCleaned, outDefinition, truncated);
+  lastHitHeadword_ = hitCandidate;
+  cachePut(lowerCleaned, outDefinition, lastHitHeadword_, truncated);
   Serial.printf("[%lu] [DICT] lookup('%s'): total %lums (def %u bytes%s)\n", millis(), queryWord.c_str(),
                 millis() - t0, static_cast<unsigned>(outDefinition.size()), truncated ? ", truncated" : "");
   return true;

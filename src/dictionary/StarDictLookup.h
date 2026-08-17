@@ -7,8 +7,9 @@
  * Only uncompressed .dict files are supported (no .dict.dz). Only the common
  * "sametypesequence" .ifo layout is supported, where each .idx entry's dict-file bytes are the
  * raw definition with no per-entry type prefix - this covers the vast majority of distributed
- * StarDict dictionaries. .syn synonym files are not consulted; lookups are exact/case-insensitive
- * word match plus a small English stem fallback.
+ * StarDict dictionaries. Optional uncompressed .syn files are not required. Lookups try the typed
+ * word, then elision (l'/d'/…), then nearby .idx headwords that share a stem (inflected forms
+ * sort next to their lemma), then CrossPoint's small English stemmer.
  *
  * Lookup index (same idea as CrossPoint 1.5's .qidx):
  * - A sidecar of uint32 .idx byte offsets, one sample every 256 entries.
@@ -42,6 +43,7 @@ class StarDictLookup {
   bool isOpen() const { return isOpen_; }
 
   const std::string& bookname() const { return bookname_; }
+  const std::string& lang() const { return lang_; }
   /** Absolute path of the folder that was last successfully opened (empty if closed). */
   const std::string& folderPath() const { return folderPath_; }
 
@@ -59,19 +61,29 @@ class StarDictLookup {
    *  allocate on the ESP32-C3's fragmented heap and abort() the whole firmware. Definitions this long
    *  never fit the reader's definition panel anyway, so capping the read avoids ever attempting the
    *  huge allocation in the first place. */
-  static constexpr uint32_t kMaxDefinitionBytes = 1600;
+  static constexpr uint32_t kMaxDefinitionBytes = 2400;
 
-  /** Looks up queryWord (exact match, then case-insensitive / stem fallback). Returns true and fills
-   *  outDefinition (capped to kMaxDefinitionBytes raw bytes) on success. If outTruncated is non-null,
-   *  set to whether the on-disk definition was larger than the cap. */
+  /** Looks up queryWord (exact match, then case-insensitive / nearby-headword / English-stem fallback).
+   *  Returns true and fills outDefinition (capped to kMaxDefinitionBytes raw bytes) on success. If
+   *  outTruncated is non-null, set to whether the on-disk definition was larger than the cap. */
   bool lookup(const std::string& queryWord, std::string& outDefinition, bool* outTruncated = nullptr);
+
+  /** Same as lookup(), but only the typed word, case, orthography fold, and elision — no inflection. */
+  bool lookupExact(const std::string& queryWord, std::string& outDefinition, bool* outTruncated = nullptr);
+
+  /** Headword that last successful lookup actually matched (lemma after stemming). Empty if none. */
+  const std::string& lastHitHeadword() const { return lastHitHeadword_; }
+
+  /** Elision-stripped and English-stem forms of @p queryWord, not including the word itself. */
+  static std::vector<std::string> alternateForms(const std::string& queryWord);
 
  private:
   struct DefCacheEntry {
-    DefCacheEntry(std::string key, std::string def, bool trunc)
-        : keyLower(std::move(key)), definition(std::move(def)), truncated(trunc) {}
+    DefCacheEntry(std::string key, std::string def, std::string hit, bool trunc)
+        : keyLower(std::move(key)), definition(std::move(def)), hitHeadword(std::move(hit)), truncated(trunc) {}
     std::string keyLower;
     std::string definition;
+    std::string hitHeadword;
     bool truncated = false;
   };
 
@@ -108,24 +120,37 @@ class StarDictLookup {
   int compareForSearch(const std::string& a, const std::string& aLower, const std::string& b,
                        const std::string& bLower) const;
 
-  bool lookupViaSamples(const std::string& candidate, const std::string& candidateLower, uint64_t& outDictOffset,
-                        uint32_t& outDictSize);
+  bool lookupViaSamples(const std::string& candidate, const std::string& candidateLower,
+                        std::vector<std::pair<uint64_t, uint32_t>>& outHits, std::string& outMatchedWord,
+                        bool allowFuzzy);
+
+  void collectSameWordHits(IdxCursor& cur, const std::string& wordLower,
+                           std::vector<std::pair<uint64_t, uint32_t>>& outHits);
 
   /** One sequential pass over .idx matching any of the lowercase candidates (first hit wins in
    *  candidate-list order when multiple match). Buffered last resort when sampled search misses. */
   bool lookupViaLinearScan(const std::vector<std::string>& candidatesLower, std::string& outHitLower,
-                           uint64_t& outDictOffset, uint32_t& outDictSize);
+                           std::vector<std::pair<uint64_t, uint32_t>>& outHits);
+
+  bool lookupInternal(const std::string& queryWord, std::string& outDefinition, bool* outTruncated, bool allowStem);
 
   bool readDefinition(uint64_t dictOffset, uint32_t dictSize, std::string& outDefinition, bool* outTruncated);
 
+  /** Reads consecutive same-headword .idx hits (StarDict stores one POS per entry). Never appends a
+   *  truncated sibling — only a too-large first entry is capped. */
+  bool readConcatenatedDefinitions(const std::vector<std::pair<uint64_t, uint32_t>>& hits, std::string& outDefinition,
+                                   bool* outTruncated);
+
   bool cacheGet(const std::string& keyLower, std::string& outDefinition, bool* outTruncated);
-  void cachePut(const std::string& keyLower, const std::string& definition, bool truncated);
+  void cachePut(const std::string& keyLower, const std::string& definition, const std::string& hitHeadword,
+                bool truncated);
 
   bool isOpen_ = false;
   FsFile idxFile_;
   FsFile dictFile_;
   std::string folderPath_;
   std::string bookname_;
+  std::string lang_;
   std::string sameTypeSequence_;
   uint32_t wordCount_ = 0;
   uint32_t idxFileSize_ = 0;
@@ -136,4 +161,5 @@ class StarDictLookup {
   static constexpr uint32_t kSampleInterval = 256;
   static constexpr size_t kDefCacheSlots = 12;
   std::vector<DefCacheEntry> defCache_;
+  std::string lastHitHeadword_;
 };
