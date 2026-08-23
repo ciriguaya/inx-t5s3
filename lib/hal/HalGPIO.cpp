@@ -170,9 +170,10 @@ void HalGPIO::startDeepSleep() {
 
   BoardT5S3::deinitForSleep();
   pinMode(T5S3_BOOT_BTN, INPUT_PULLUP);
-  pinMode(T5S3_TOUCH_INT, INPUT_PULLUP);
-  const uint64_t wakeMask = POWER_WAKE_MASK | TOUCH_WAKE_MASK;
-  LOG_DBG("GPIO", "Entering deep sleep, wake on power button + touch");
+  // Wake only on the boot button: touch must stay off while sleeping (a stray tap
+  // or the home-key area would otherwise power the device back on).
+  const uint64_t wakeMask = POWER_WAKE_MASK;
+  LOG_DBG("GPIO", "Entering deep sleep, wake on power button only");
 #if SOC_GPIO_SUPPORT_DEEPSLEEP_WAKEUP
   esp_sleep_disable_wakeup_source(ESP_SLEEP_WAKEUP_ALL);
   esp_deep_sleep_enable_gpio_wakeup(wakeMask, ESP_GPIO_WAKEUP_GPIO_LOW);

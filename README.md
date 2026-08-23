@@ -43,7 +43,7 @@ This firmware is **touch-first**: the T5S3's GT911 touch panel is the primary in
 - `InputManager` — boot button (GPIO0) = power, PCA9535 side button = Back, GT911 touch state machine (tap / hold / swipe / home key).
 - `BatteryMonitor` — BQ27220 fuel gauge.
 - `SDCardManager` — SdFat on the T5S3 SD bus (CS12, SPI 21/13/14).
-- `lib/hal/HalGPIO` — T5S3 pinout, deep-sleep on boot button + touch wake, PCF85063 RTC (menu clock, date/time sleep screen, time sync), cached battery %, USB detection, wake-reason detection.
+- `lib/hal/HalGPIO` — T5S3 pinout, deep-sleep on the boot button only (touch wake is disabled — the device must not turn itself back on from a stray touch), PCF85063 RTC (menu clock, date/time sleep screen, time sync), cached battery %, USB detection, wake-reason detection.
 - `lib/hal/HalStorage` — thin `Storage` facade over Inx's `SDCardManager` so T5S3-fork code (highlight system, crash-report dumper) works unchanged. It deliberately does **not** alias `FsFile`, so Inx's own file code keeps working.
 - `src/platform/skip_efuse_blk_check.c` — efuse check bypass (from the T5S3 fork).
 - `lib/miniz` — PNG-encoder symbols removed so they do not collide with M5GFX's bundled miniz at link time (the firmware encodes JPEG via `toojpeg`; the T5S3 fork's miniz does the same). Note: `HalSystem` (panic hooks) from the fork is intentionally **not** ported — hidden crash-reset loops made it a brick risk.
@@ -107,7 +107,7 @@ This firmware is **touch-first**: the T5S3's GT911 touch panel is the primary in
 ### Other T5S3 defaults
 - `uiTheme = UI_THEME_BOTTOM_TABS` (thumb-reachable tab bar).
 - RTC-backed menu clock, date/time sleep screen and time sync are enabled (`gpio.deviceIsX3()` returns true for clock features; the display itself reports X4 geometry).
-- Deep sleep wakes on the boot button or on touch.
+- Deep sleep wakes on the boot button only — touch is disabled while sleeping, so the device turns on/off solely via the boot button.
 
 ## Building / flashing
 
