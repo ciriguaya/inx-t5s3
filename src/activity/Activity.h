@@ -66,6 +66,48 @@ class Activity {
   virtual void loop() {}
 
   /**
+   * @brief Touch tap handler, invoked before loop() when the touch panel reports a tap.
+   * @param x Oriented logical X coordinate (GfxRenderer screen space)
+   * @param y Oriented logical Y coordinate (GfxRenderer screen space)
+   * @return true if the tap was consumed, false to fall through to default handling
+   */
+  virtual bool onTouchTap(int16_t x, int16_t y) {
+    (void)x;
+    (void)y;
+    return false;
+  }
+
+  /**
+   * @brief Touch swipe handler, invoked before loop() when a moved touch is released.
+   * @param dx Oriented logical delta X
+   * @param dy Oriented logical delta Y
+   * @param endX Oriented logical X of the swipe end point
+   * @param endY Oriented logical Y of the swipe end point
+   * @return true if the swipe was consumed, false to fall through to default handling
+   */
+  virtual bool onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+    (void)dx;
+    (void)dy;
+    (void)endX;
+    (void)endY;
+    return false;
+  }
+
+  /**
+   * @brief Touch hold handler, invoked while a touch is held in place (long-press).
+   * @param x Oriented logical X coordinate
+   * @param y Oriented logical Y coordinate
+   * @param heldMs How long the touch has been held
+   * @return true if the hold was consumed
+   */
+  virtual bool onTouchHold(int16_t x, int16_t y, unsigned long heldMs) {
+    (void)x;
+    (void)y;
+    (void)heldMs;
+    return false;
+  }
+
+  /**
    * @brief Gets the activity's name identifier
    * @return The name as a C-string
    */
@@ -95,4 +137,24 @@ class Activity {
    * ReaderActivity opts out because book readers have their own short-power behavior setting.
    */
   virtual bool allowGlobalPowerRefresh() { return true; }
+
+  /**
+   * @brief Returns the currently active sub-activity (e.g. the settings category panel inside
+   * SettingsActivity), or nullptr when this activity has none.
+   *
+   * The touch dispatcher in main.cpp walks this chain so taps/swipes land on the
+   * sub-activity that actually owns the screen instead of the top-level activity.
+   */
+  virtual Activity* activeSubActivity() { return nullptr; }
+
+  /**
+   * @brief Requests a full re-render of the activity's screen on its next loop.
+   *
+   * Used after a global overlay (the quick-settings menu) closes with a night-mode
+   * change: the captured frame underneath has the old polarity, so the activity
+   * must repaint itself in the new one. Activities with their own dirty flag set it
+   * here; the default no-op covers screens that have nothing to repaint outside
+   * their normal update flow.
+   */
+  virtual void requestRedraw() {}
 };

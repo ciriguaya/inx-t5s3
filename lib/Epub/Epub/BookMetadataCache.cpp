@@ -483,8 +483,14 @@ bool BookMetadataCache::extractAndCacheCssFiles(const std::string& epubPath) {
 
   size_t searchPos = 0;
   int cssFound = 0;
+  uint32_t cssScanCount = 0;
 
   while (true) {
+    // Yield periodically: the OPF manifest scan runs in the main loop and can
+    // take seconds on a large EPUB (the IDLE task watchdog must stay fed).
+    if ((++cssScanCount & 0x3F) == 0) {
+      yield();
+    }
     size_t itemPos = opfContent.find("<item", searchPos);
     if (itemPos == std::string::npos) break;
 

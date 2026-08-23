@@ -43,6 +43,9 @@ constexpr int kDrawerHeaderPillPadX = 10;
 constexpr int kDrawerHeaderPillHeight = 24;
 constexpr int kPortraitDrawerHeightPercent = 65;
 
+/** Width of the touch +/- button zones at the edges of a value row's value column. */
+constexpr int kStepBtnW = 58;
+
 bool isLandscapeReader(const GfxRenderer& gfx) {
   const auto o = gfx.getOrientation();
   return o == GfxRenderer::LandscapeClockwise || o == GfxRenderer::LandscapeCounterClockwise;
@@ -650,6 +653,20 @@ void SettingsDrawer::drawMenuItems() {
   }
 }
 
+bool SettingsDrawer::isToggleRow(const MenuItem item) const {
+  switch (item) {
+    case MenuItem::ExtraParagraphSpacing:
+    case MenuItem::ParagraphCssIndent:
+    case MenuItem::Hyphenation:
+    case MenuItem::BionicReading:
+    case MenuItem::ReaderSmartImageRefresh:
+    case MenuItem::AntiAliasing:
+      return true;
+    default:
+      return false;
+  }
+}
+
 void SettingsDrawer::drawMenuItemRow(int visibleRow, int menuIndex) {
   if (menuIndex < 0 || menuIndex >= static_cast<int>(menuItems.size())) {
     return;
@@ -686,59 +703,56 @@ void SettingsDrawer::drawMenuItemRow(int visibleRow, int menuIndex) {
   const int textY = itemY + (itemHeight - renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_10_FONT_ID)) / 2;
   renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, textX, textY, entry.name, isSelected ? 0 : 1);
 
-  const int valueColumnRight = drawerX + drawerWidth - 24;
-  if (entry.item == MenuItem::FontFamily) {
-    const char* val = entry.getValueText(settings);
-    if (val && val[0] != '\0') {
-      ReaderFontSettingsDraw::drawFontFamilyRowValue(renderer, settings.fontFamily, valueColumnRight, itemY, itemHeight,
-                                                     isSelected, val);
-    }
-  } else if (entry.item == MenuItem::FontSize) {
-    const int valueAreaLeft = std::max(textX + 72, drawerX + drawerWidth * 35 / 100);
-    ReaderFontSettingsDraw::drawFontSizeSliderRowValue(renderer, settings.fontFamily, settings.fontSize, valueAreaLeft,
-                                                       valueColumnRight, itemY, itemHeight, isSelected);
-  } else {
-    bool checkbox = false;
+  const int valueLeft = drawerX + drawerWidth * 35 / 100;
+  const int valueRight = drawerX + drawerWidth - 24;
+  if (isToggleRow(entry.item)) {
     bool checked = false;
     switch (entry.item) {
       case MenuItem::ExtraParagraphSpacing:
-        checkbox = true;
         checked = settings.extraParagraphSpacing != 0;
         break;
       case MenuItem::ParagraphCssIndent:
-        checkbox = true;
         checked = settings.paragraphCssIndentEnabled != 0;
         break;
       case MenuItem::Hyphenation:
-        checkbox = true;
         checked = settings.hyphenationEnabled != 0;
         break;
       case MenuItem::BionicReading:
-        checkbox = true;
         checked = settings.bionicReadingEnabled != 0;
         break;
       case MenuItem::ReaderSmartImageRefresh:
-        checkbox = true;
         checked = settings.readerSmartRefreshOnImages != 0;
         break;
       case MenuItem::AntiAliasing:
-        checkbox = true;
         checked = settings.textAntiAliasing != 0;
-        break;
-      case MenuItem::ChapterSkip:
-        checkbox = false;
         break;
       default:
         break;
     }
-    if (checkbox) {
-      ReaderFontSettingsDraw::drawToggleCheckbox(renderer, valueColumnRight, itemY, itemHeight, isSelected, checked);
-    } else {
-      const char* val = entry.getValueText(settings);
-      if (val && val[0] != '\0') {
-        const int valW = renderer.text.getWidth(ATKINSON_HYPERLEGIBLE_10_FONT_ID, val);
-        renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, valueColumnRight - valW, textY, val, isSelected ? 0 : 1);
-      }
+    ReaderFontSettingsDraw::drawToggleCheckbox(renderer, valueRight, itemY, itemHeight, isSelected, checked);
+  } else {
+    // Touch step-row: a "-" button at the left edge of the value column, the current value centered
+    // between the two, and a "+" button at the right edge (see handleTouchTap's matching zones).
+    const char* val = entry.getValueText(settings);
+    auto drawStepBtn = [&](const int x, const char* label) {
+      const int btnH = std::min(40, itemHeight - 12);
+      const int btnY = itemY + (itemHeight - btnH) / 2;
+      const int btnW = kStepBtnW - 8;
+      renderer.rectangle.fill(x, btnY, btnW, btnH, false, true);
+      renderer.rectangle.render(x, btnY, btnW, btnH, true, true);
+      const int lw = renderer.text.getWidth(ATKINSON_HYPERLEGIBLE_12_FONT_ID, label);
+      const int ly = btnY + (btnH - renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_12_FONT_ID)) / 2;
+      renderer.text.render(ATKINSON_HYPERLEGIBLE_12_FONT_ID, x + (btnW - lw) / 2, ly, label, isSelected ? 0 : 1,
+                           EpdFontFamily::BOLD);
+    };
+    drawStepBtn(valueLeft, "-");
+    drawStepBtn(valueRight - kStepBtnW + 8, "+");
+    if (val && val[0] != '\0') {
+      const int midLeft = valueLeft + kStepBtnW;
+      const int midRight = valueRight - kStepBtnW;
+      const int vw = renderer.text.getWidth(ATKINSON_HYPERLEGIBLE_10_FONT_ID, val);
+      const int vx = midLeft + std::max(0, (midRight - midLeft - vw) / 2);
+      renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, vx, textY, val, isSelected ? 0 : 1);
     }
   }
 
@@ -905,6 +919,79 @@ void SettingsDrawer::handleInput(MappedInputManager& input) {
     lastInputTime = currentTime;
     renderWithRefresh(HalDisplay::FAST_REFRESH);
   }
+}
+
+bool SettingsDrawer::handleTouchTap(int16_t x, int16_t y) {
+  if (!visible) {
+    return false;
+  }
+  if (x < drawerX || x >= drawerX + drawerWidth || y < drawerY || y >= drawerY + drawerHeight) {
+    return false;  // outside the drawer - let the host decide (dismiss, etc.)
+  }
+  const int startY = drawerY + drawerListTop();
+  const int menuIndex = scrollOffset + (y - startY) / itemHeight;
+  if (menuIndex < 0 || menuIndex >= static_cast<int>(menuItems.size())) {
+    return true;
+  }
+  selectedIndex = menuIndex;
+  const auto& entry = menuItems[static_cast<size_t>(menuIndex)];
+  if (entry.item == MenuItem::Separator || entry.item == MenuItem::StatusBarSeparator ||
+      entry.item == MenuItem::StatusBarFullSeparator) {
+    toggleGroup(entry.group);
+  } else if (isToggleRow(entry.item)) {
+    applyChange(1);  // tap toggles a checkbox row
+  } else {
+    // Value row: the value column splits into a "-" zone (left edge) and a "+" zone (right edge)
+    // so a tap can step the value down as well as up; tapping the middle / label just selects.
+    const int valueLeft = drawerX + drawerWidth * 35 / 100;
+    const int valueRight = drawerX + drawerWidth - 24;
+    if (x >= valueLeft && x < valueLeft + kStepBtnW) {
+      applyChange(-1);
+    } else if (x >= valueRight - kStepBtnW && x < valueRight) {
+      applyChange(1);
+    }
+  }
+  lastInputTime = xTaskGetTickCount();
+  renderWithRefresh(HalDisplay::FAST_REFRESH);
+  return true;
+}
+
+bool SettingsDrawer::handleTouchSwipe(int16_t dx, int16_t dy) {
+  if (!visible) {
+    return false;
+  }
+  constexpr int kSwipeThreshold = 40;
+  const int totalItems0 = static_cast<int>(menuItems.size());
+  bool changed = false;
+  if (dy <= -kSwipeThreshold && totalItems0 > 0) {
+    selectedIndex = (selectedIndex + 1) % totalItems0;
+    changed = true;
+  } else if (dy >= kSwipeThreshold && totalItems0 > 0) {
+    selectedIndex = (selectedIndex - 1 + totalItems0) % totalItems0;
+    changed = true;
+  } else if (dx <= -kSwipeThreshold) {
+    applyChange(1);
+    changed = true;
+  } else if (dx >= kSwipeThreshold) {
+    applyChange(-1);
+    changed = true;
+  }
+  if (!changed) {
+    return true;
+  }
+  // applyChange() may rebuild the menu (PresetPicker); clamp against the fresh count.
+  const int totalItems = static_cast<int>(menuItems.size());
+  const int maxScroll = std::max(0, totalItems - itemsPerPage);
+  selectedIndex = std::max(0, std::min(selectedIndex, std::max(0, totalItems - 1)));
+  if (selectedIndex < scrollOffset) {
+    scrollOffset = selectedIndex;
+  } else if (selectedIndex >= scrollOffset + itemsPerPage) {
+    scrollOffset = std::min(selectedIndex - itemsPerPage + 1, maxScroll);
+  }
+  scrollOffset = std::max(0, std::min(scrollOffset, maxScroll));
+  lastInputTime = xTaskGetTickCount();
+  renderWithRefresh(HalDisplay::FAST_REFRESH);
+  return true;
 }
 
 /**

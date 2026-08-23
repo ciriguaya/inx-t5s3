@@ -251,7 +251,7 @@ bool ReaderSetting::loadFromFile() {
 
   uint8_t fileSettingsCount = 0;
   serialization::readPod(inputFile, fileSettingsCount);
-  const bool shouldRewriteSettings = version < READER_SETTINGS_FILE_VERSION || fileSettingsCount < READER_SETTINGS_COUNT;
+  bool shouldRewriteSettings = version < READER_SETTINGS_FILE_VERSION || fileSettingsCount < READER_SETTINGS_COUNT;
   uint8_t settingsRead = 0;
 
   do {
@@ -326,6 +326,13 @@ bool ReaderSetting::loadFromFile() {
     if (++settingsRead >= fileSettingsCount) break;
 
     readAndValidate(inputFile, btnPowerShortAction, SystemSetting::READER_BUTTON_ACTION_COUNT);
+    // T5S3 device default: the power button opens the book menu while reading. Older settings files
+    // persisted the pre-OPEN_MENU default (Page Refresh) - migrate it so the physical button does what
+    // the user expects without touching the settings UI.
+    if (btnPowerShortAction == SystemSetting::BTN_ACTION_PAGE_REFRESH) {
+      btnPowerShortAction = SystemSetting::BTN_ACTION_OPEN_MENU;
+      shouldRewriteSettings = true;
+    }
     if (++settingsRead >= fileSettingsCount) break;
 
     readAndValidate(inputFile, orientation, SystemSetting::ORIENTATION_COUNT);

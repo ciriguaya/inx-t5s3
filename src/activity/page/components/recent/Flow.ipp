@@ -7,7 +7,7 @@ void RecentActivity::renderFlow() {
   }
 
   const int screenW = renderer.getScreenWidth();
-  const int startY = mainContentTop() + 5;
+  const int startY = mainContentTop() + (bannerVisible() ? HIGHLIGHT_BANNER_HEIGHT : 0) + 5;
 
   int currentIndex = selectorIndex;
   int totalBooks = (int)recentBooks.size();

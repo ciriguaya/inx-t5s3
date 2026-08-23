@@ -89,6 +89,16 @@ class WifiSelectionActivity final : public ActivityWithSubactivity, public Menu 
   void loop() override;
 
   /**
+   * @brief Touch: tap a network row to connect, tap prompt buttons / the failed screen, etc.
+   */
+  bool onTouchTap(int16_t x, int16_t y) override;
+
+  /**
+   * @brief Touch: swipe scrolls the network list by a page.
+   */
+  bool onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) override;
+
+  /**
    * @brief Gets the IP address after successful connection
    * @return IP address string, empty if not connected
    */
@@ -118,6 +128,11 @@ class WifiSelectionActivity final : public ActivityWithSubactivity, public Menu 
   int forgetPromptSelection = 0;  ///< Forget prompt selection (0=Cancel, 1=Forget)
 
   unsigned long connectionStartTime = 0;  ///< Start time of current connection attempt
+
+  /** Scan attempts so far (0-based); later attempts use a passive scan + longer per-channel time. */
+  int scanAttempt_ = 0;
+  /** Touch scroll offset into the network list (swipes); clamped to the list bounds. */
+  int listScrollOffset_ = 0;
 
   /**
    * @brief Static trampoline function for the display task

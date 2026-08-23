@@ -116,6 +116,55 @@ void XtcReaderChapterSelectionActivity::loop() {
   }
 }
 
+bool XtcReaderChapterSelectionActivity::onTouchTap(int16_t x, int16_t y) {
+  (void)x;
+  if (!xtc) {
+    return true;
+  }
+  const auto& chapters = xtc->getChapters();
+  if (chapters.empty()) {
+    return true;
+  }
+  const int pageItems = getPageItems();
+  const int pageStart = selectorIndex / pageItems * pageItems;
+  constexpr int startY = 60;
+  constexpr int lineHeight = 30;
+  const int row = (y - startY) / lineHeight;
+  if (row < 0 || row >= pageItems) {
+    return true;
+  }
+  const int index = pageStart + row;
+  if (index < 0 || index >= static_cast<int>(chapters.size())) {
+    return true;
+  }
+  selectorIndex = index;
+  onSelectPage(chapters[static_cast<size_t>(selectorIndex)].startPage);
+  return true;
+}
+
+bool XtcReaderChapterSelectionActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)dx;
+  (void)endX;
+  (void)endY;
+  if (!xtc) {
+    return true;
+  }
+  const int total = static_cast<int>(xtc->getChapters().size());
+  if (total == 0) {
+    return true;
+  }
+  const int pageItems = getPageItems();
+  constexpr int kSwipeThreshold = 40;
+  if (dy <= -kSwipeThreshold) {
+    selectorIndex = ((selectorIndex / pageItems + 1) * pageItems) % total;
+    updateRequired = true;
+  } else if (dy >= kSwipeThreshold) {
+    selectorIndex = ((selectorIndex / pageItems - 1) * pageItems + total) % total;
+    updateRequired = true;
+  }
+  return true;
+}
+
 void XtcReaderChapterSelectionActivity::displayTaskLoop() {
   while (true) {
     if (updateRequired) {

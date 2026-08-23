@@ -82,6 +82,52 @@ void QuickActionsSettingsActivity::loop() {
   }
 }
 
+bool QuickActionsSettingsActivity::onTouchTap(int16_t x, int16_t y) {
+  if (subActivity) {
+    return true;
+  }
+  const std::vector<uint8_t> actions = eligibleActions();
+  const int total = static_cast<int>(actions.size());
+  if (total == 0) {
+    return true;
+  }
+  const int bodyTop = INX_THEME.drawPageHeader(renderer, "Quick Actions");
+  const int row = (y - bodyTop) / kRowH;
+  if (row >= 0 && row < total) {
+    const int idx = row + scrollOffset_;
+    if (idx >= 0 && idx < total) {
+      selectedIndex_ = idx;
+      toggleSelected();
+      render();
+      return true;
+    }
+  }
+  return true;
+}
+
+bool QuickActionsSettingsActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)endX;
+  (void)endY;
+  if (subActivity) {
+    return true;
+  }
+  (void)dx;
+  constexpr int kSwipeThreshold = 40;
+  const std::vector<uint8_t> actions = eligibleActions();
+  const int total = static_cast<int>(actions.size());
+  if (total == 0) {
+    return true;
+  }
+  if (dy <= -kSwipeThreshold) {
+    selectedIndex_ = (selectedIndex_ + 1) % total;
+    render();
+  } else if (dy >= kSwipeThreshold) {
+    selectedIndex_ = (selectedIndex_ - 1 + total) % total;
+    render();
+  }
+  return true;
+}
+
 void QuickActionsSettingsActivity::render() {
   renderer.clearScreen();
   const int screenW = renderer.getScreenWidth();

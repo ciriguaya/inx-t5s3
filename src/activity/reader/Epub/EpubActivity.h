@@ -16,6 +16,7 @@
 #include "EpubAnnotationUi.h"
 #include "EpubDictionaryUi.h"
 #include "EpubReadingStats.h"
+#include "../HighlightPersistence.h"
 #include "MenuDrawer.h"
 #include "OrientationPickerUi.h"
 #include "PresetPickerUi.h"
@@ -86,6 +87,10 @@ class EpubActivity final : public ActivityWithSubactivity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  bool onTouchTap(int16_t x, int16_t y) override;
+  bool onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) override;
+  bool onTouchHold(int16_t x, int16_t y, unsigned long heldMs) override;
+  void requestRedraw() override { updateRequired = true; }
   /** Match Crosspoint-style reader: pump display from loop (no separate FreeRTOS render task). */
   bool skipLoopDelay() override { return true; }
   /** X3 flick/shake page turns never register as button activity, so with auto-sleep on the device would
@@ -134,6 +139,16 @@ class EpubActivity final : public ActivityWithSubactivity {
   int lastGoodSpineIndex_ = 0;
   int lastGoodPageNumber_ = 0;
   bool chapterRecoveryAttempted_ = false;
+  /** True after a quote jump landed: the on-screen page is a preview, not the reading position.
+   *  Stays set for the whole quote-initiated session - the saved position is only ever persisted when
+   *  the book is opened directly, never from a quote visit (see saveProgress()/onExit()). */
+  bool skipProgressSave_ = false;
+
+  /** Quotes from /highlights belonging to this book (by title/path), loaded once per book open. Used to
+   *  re-materialize the T5S3 fork's old highlights inside the current reader layout. */
+  std::vector<HighlightEntry> importQuotes_;
+  bool importQuotesLoaded_ = false;
+  void ensureImportQuotesLoaded();
 
   SettingsDrawer* settingsDrawer = nullptr;
   bool settingsDrawerVisible = false;

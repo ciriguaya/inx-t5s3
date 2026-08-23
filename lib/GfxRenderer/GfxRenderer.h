@@ -37,6 +37,9 @@ class GfxRenderer {
   HalDisplay& display;
   RenderMode renderMode;
   Orientation orientation;
+  /** Night mode: inverts black/white UI pixels (text, shapes, icons) at draw time; image pixels drawn
+   *  through drawPixelRaw() are not inverted, so photos/covers stay natural on a dark page. */
+  bool nightMode = false;
   uint16_t panelWidth = HalDisplay::DISPLAY_WIDTH;
   uint16_t panelHeight = HalDisplay::DISPLAY_HEIGHT;
   uint16_t panelWidthBytes = HalDisplay::DISPLAY_WIDTH_BYTES;
@@ -93,6 +96,8 @@ class GfxRenderer {
   enum class FillTone : uint8_t { Paper, Ink, Gray };
 
   void drawPixel(int x, int y, bool state = true) const;
+  /** Raw pixel write without night-mode inversion - the image/bitmap draw paths use this. */
+  void drawPixelRaw(int x, int y, bool state = true) const;
   bool readPixel(int x, int y) const;
   bool readPackedRow1bpp(int x, int y, int width, uint8_t* outRow) const;
   void drawPackedRow1bpp(int x, int y, int width, const uint8_t* row) const;
@@ -112,6 +117,10 @@ class GfxRenderer {
  public:
   void setRenderMode(const RenderMode mode) { this->renderMode = mode; }
   RenderMode getRenderMode() const { return renderMode; }
+  /** Night mode control: inverts black/white (text, fills, shapes) at the pixel level. Images and
+   *  bitmaps that write via drawPixelRaw() are NOT inverted. Only affects BW rendering. */
+  void setNightMode(const bool enabled) { nightMode = enabled; }
+  bool isNightMode() const { return nightMode; }
   bool deviceIsX3() const;
   void copyGrayscaleLsbBuffers() const;
   void copyGrayscaleMsbBuffers() const;

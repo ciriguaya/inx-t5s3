@@ -21,6 +21,8 @@ class OpdsServerListActivity final : public ActivityWithSubactivity {
   void onExit() override;
   /** Handles input for navigating and selecting an OPDS server. */
   void loop() override;
+  /** Touch: tap a server row to browse it. */
+  bool onTouchTap(int16_t x, int16_t y) override;
 
  private:
   TaskHandle_t displayTaskHandle = nullptr;

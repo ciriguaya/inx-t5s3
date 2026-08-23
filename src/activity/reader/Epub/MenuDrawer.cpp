@@ -325,17 +325,15 @@ void MenuDrawer::drawMenuItemRow(int visibleRow, int menuIndex) {
   const int startY = drawerY + drawerListTop();
   const int itemY = startY + (visibleRow * itemHeight);
   const auto& item = menuItems[static_cast<size_t>(menuIndex)];
-  const bool isSelected = (menuIndex == selectedIndex);
 
-  renderer.rectangle.fill(
-      drawerX, itemY, drawerWidth, itemHeight,
-      isSelected ? static_cast<int>(GfxRenderer::FillTone::Ink) : static_cast<int>(GfxRenderer::FillTone::Paper));
+  // Touch-first: rows are always paper with ink text; the row under the finger is activated directly.
+  renderer.rectangle.fill(drawerX, itemY, drawerWidth, itemHeight, static_cast<int>(GfxRenderer::FillTone::Paper));
 
   const int textX = drawerX + 23;
   const int textY = itemY + (itemHeight - renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_10_FONT_ID)) / 2;
 
-  renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, textX, textY, item.label.c_str(), isSelected ? 0 : 1);
-  renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, drawerX + drawerWidth - 30, textY, "›", isSelected ? 0 : 1);
+  renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, textX, textY, item.label.c_str(), true);
+  renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, drawerX + drawerWidth - 30, textY, "\xE2\x80\xBA", true);
   renderer.line.render(drawerX, itemY + itemHeight - 1, drawerX + drawerWidth, itemY + itemHeight - 1, true,
                        LineRender::Style::Dotted);
 }
@@ -402,6 +400,7 @@ void MenuDrawer::drawTocBackground() {
 void MenuDrawer::prepareTocForOpen(int preferredTocIndex) {
   ensureTocState();
   std::fill(tocExpanded.begin(), tocExpanded.end(), 0);
+  currentTocIndex_ = preferredTocIndex;
 
   if (preferredTocIndex >= 0) {
     expandTocAncestors(preferredTocIndex);
@@ -554,13 +553,6 @@ void MenuDrawer::renderToc() {
       if (itemIndex >= totalItems) break;
 
       int itemY = drawY + (i * LIST_ITEM_HEIGHT);
-      bool isSelected = (itemIndex == tocSelectedIndex);
-
-      if (isSelected) {
-        renderer.rectangle.fill(tocDrawerX, itemY, panelW, LIST_ITEM_HEIGHT,
-                                static_cast<int>(GfxRenderer::FillTone::Ink));
-      }
-
       int textY = itemY + (LIST_ITEM_HEIGHT - renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_10_FONT_ID)) / 2;
 
       const int rawTocIndex = visibleTocIndexes[static_cast<size_t>(itemIndex)];
@@ -576,10 +568,12 @@ void MenuDrawer::renderToc() {
       const std::string truncatedName =
           renderer.text.truncate(ATKINSON_HYPERLEGIBLE_10_FONT_ID, item.title.c_str(), maxTitleW);
 
-      renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, indentSize, textY, truncatedName.c_str(),
-                           isSelected ? 0 : 1);
-      renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, tocDrawerX + panelW - 30, textY, rowIndicator,
-                           isSelected ? 0 : 1);
+      // Touch-first: no selection highlight. The row for the current reading position gets a bold
+      // title as a subtle "you are here" marker instead.
+      const bool isCurrent = (rawTocIndex == currentTocIndex_);
+      renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, indentSize, textY, truncatedName.c_str(), true,
+                           isCurrent ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
+      renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, tocDrawerX + panelW - 30, textY, rowIndicator, true);
       renderer.line.render(tocDrawerX, itemY + LIST_ITEM_HEIGHT - 1, tocDrawerX + panelW, itemY + LIST_ITEM_HEIGHT - 1,
                            true, LineRender::Style::Dotted);
     }
@@ -640,21 +634,16 @@ void MenuDrawer::renderBookmarks() {
     }
 
     const int itemY = drawY + (i * LIST_ITEM_HEIGHT);
-    const bool isSelected = (itemIndex == bookmarkSelectedIndex);
     const auto& row = bookmarkEntries[static_cast<size_t>(itemIndex)];
-
-    if (isSelected) {
-      renderer.rectangle.fill(tocDrawerX, itemY, panelW, LIST_ITEM_HEIGHT,
-                              static_cast<int>(GfxRenderer::FillTone::Ink));
-    }
 
     const int textY = itemY + (LIST_ITEM_HEIGHT - renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_10_FONT_ID)) / 2;
     const int kIndent = tocDrawerX + 20;
     const std::string truncated =
         renderer.text.truncate(ATKINSON_HYPERLEGIBLE_10_FONT_ID, row.label.c_str(), panelW - 60 - 20);
 
-    renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, kIndent, textY, truncated.c_str(), isSelected ? 0 : 1);
-    renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, tocDrawerX + panelW - 30, textY, "›", isSelected ? 0 : 1);
+    // Touch-first: no selection highlight - the row under the finger is acted on directly.
+    renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, kIndent, textY, truncated.c_str(), true);
+    renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, tocDrawerX + panelW - 30, textY, "\xE2\x80\xBA", true);
     renderer.line.render(tocDrawerX, itemY + LIST_ITEM_HEIGHT - 1, tocDrawerX + panelW, itemY + LIST_ITEM_HEIGHT - 1,
                          true, LineRender::Style::Dotted);
   }
@@ -715,21 +704,16 @@ void MenuDrawer::renderAnnotations() {
     }
 
     const int itemY = drawY + (i * LIST_ITEM_HEIGHT);
-    const bool isSelected = (itemIndex == annotationSelectedIndex);
     const auto& row = annotationEntries[static_cast<size_t>(itemIndex)];
-
-    if (isSelected) {
-      renderer.rectangle.fill(tocDrawerX, itemY, panelW, LIST_ITEM_HEIGHT,
-                              static_cast<int>(GfxRenderer::FillTone::Ink));
-    }
 
     const int textY = itemY + (LIST_ITEM_HEIGHT - renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_10_FONT_ID)) / 2;
     const int kIndent = tocDrawerX + 20;
     const std::string truncated =
         renderer.text.truncate(ATKINSON_HYPERLEGIBLE_10_FONT_ID, row.label.c_str(), panelW - 60 - 20);
 
-    renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, kIndent, textY, truncated.c_str(), isSelected ? 0 : 1);
-    renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, tocDrawerX + panelW - 30, textY, "›", isSelected ? 0 : 1);
+    // Touch-first: no selection highlight - the row under the finger is acted on directly.
+    renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, kIndent, textY, truncated.c_str(), true);
+    renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, tocDrawerX + panelW - 30, textY, "\xE2\x80\xBA", true);
     renderer.line.render(tocDrawerX, itemY + LIST_ITEM_HEIGHT - 1, tocDrawerX + panelW, itemY + LIST_ITEM_HEIGHT - 1,
                          true, LineRender::Style::Dotted);
   }
@@ -1150,62 +1134,7 @@ void MenuDrawer::handleInput(MappedInputManager& input) {
 
   if (input.wasReleased(MappedInputManager::Button::Confirm)) {
     if (selectedIndex >= 0 && selectedIndex < static_cast<int>(menuItems.size())) {
-      if (menuItems[selectedIndex].action == MenuAction::SELECT_CHAPTER) {
-        showingToc = true;
-        int preferredTocIndex = -1;
-        if (epub && readerSpineIndex_ >= 0) {
-          const int ti = epub->getTocIndexForSpineIndex(readerSpineIndex_);
-          if (ti >= 0) {
-            preferredTocIndex = ti;
-          }
-        }
-        prepareTocForOpen(preferredTocIndex);
-        lastInputTime = xTaskGetTickCount();
-        renderWithRefresh();
-      } else if (menuItems[selectedIndex].action == MenuAction::SHOW_BOOKMARKS) {
-        refreshBookmarkEntriesFromProvider();
-        bookmarkSelectedIndex = 0;
-        for (int i = 0; i < static_cast<int>(bookmarkEntries.size()); ++i) {
-          if (bookmarkEntries[static_cast<size_t>(i)].isCurrentPosition) {
-            bookmarkSelectedIndex = i;
-            break;
-          }
-        }
-        showingBookmarks = true;
-        lastInputTime = xTaskGetTickCount();
-        renderWithRefresh();
-      } else if (menuItems[selectedIndex].action == MenuAction::SHOW_ANNOTATIONS) {
-        annotationEntries.clear();
-        if (annotationListProvider) {
-          const auto provided = annotationListProvider();
-          annotationEntries.insert(annotationEntries.end(), provided.begin(), provided.end());
-        }
-        annotationSelectedIndex = 0;
-        for (int i = 0; i < static_cast<int>(annotationEntries.size()); ++i) {
-          if (annotationEntries[static_cast<size_t>(i)].isCurrentPosition) {
-            annotationSelectedIndex = i;
-            break;
-          }
-        }
-        showingAnnotations = true;
-        lastInputTime = xTaskGetTickCount();
-        renderWithRefresh();
-      } else if (menuItems[selectedIndex].action == MenuAction::GO_TO_PERCENT) {
-        percentValue_ = percentProvider ? percentProvider() : 0;
-        showingPercent = true;
-        lastInputTime = xTaskGetTickCount();
-        renderWithRefresh();
-      } else {
-        hide();
-        if (onDismiss) {
-          onDismiss();
-        }
-        lastInputTime = xTaskGetTickCount();
-
-        if (onAction) {
-          onAction(menuItems[selectedIndex].action);
-        }
-      }
+      activateMainMenuRow(selectedIndex);
     }
     return;
   }
@@ -1256,4 +1185,252 @@ void MenuDrawer::handleInput(MappedInputManager& input) {
       }
     }
   }
+}
+
+/**
+ * @brief Activates a main-menu row (the Confirm action): enters the sub-view or fires the action.
+ */
+void MenuDrawer::activateMainMenuRow(const int index) {
+  if (index < 0 || index >= static_cast<int>(menuItems.size())) {
+    return;
+  }
+  const auto action = menuItems[static_cast<size_t>(index)].action;
+  if (action == MenuAction::SELECT_CHAPTER) {
+    showingToc = true;
+    int preferredTocIndex = -1;
+    if (epub && readerSpineIndex_ >= 0) {
+      const int ti = epub->getTocIndexForSpineIndex(readerSpineIndex_);
+      if (ti >= 0) {
+        preferredTocIndex = ti;
+      }
+    }
+    prepareTocForOpen(preferredTocIndex);
+    lastInputTime = xTaskGetTickCount();
+    renderWithRefresh();
+  } else if (action == MenuAction::SHOW_BOOKMARKS) {
+    refreshBookmarkEntriesFromProvider();
+    bookmarkSelectedIndex = 0;
+    for (int i = 0; i < static_cast<int>(bookmarkEntries.size()); ++i) {
+      if (bookmarkEntries[static_cast<size_t>(i)].isCurrentPosition) {
+        bookmarkSelectedIndex = i;
+        break;
+      }
+    }
+    showingBookmarks = true;
+    lastInputTime = xTaskGetTickCount();
+    renderWithRefresh();
+  } else if (action == MenuAction::SHOW_ANNOTATIONS) {
+    annotationEntries.clear();
+    if (annotationListProvider) {
+      const auto provided = annotationListProvider();
+      annotationEntries.insert(annotationEntries.end(), provided.begin(), provided.end());
+    }
+    annotationSelectedIndex = 0;
+    for (int i = 0; i < static_cast<int>(annotationEntries.size()); ++i) {
+      if (annotationEntries[static_cast<size_t>(i)].isCurrentPosition) {
+        annotationSelectedIndex = i;
+        break;
+      }
+    }
+    showingAnnotations = true;
+    lastInputTime = xTaskGetTickCount();
+    renderWithRefresh();
+  } else if (action == MenuAction::GO_TO_PERCENT) {
+    percentValue_ = percentProvider ? percentProvider() : 0;
+    showingPercent = true;
+    lastInputTime = xTaskGetTickCount();
+    renderWithRefresh();
+  } else {
+    hide();
+    if (onDismiss) {
+      onDismiss();
+    }
+    lastInputTime = xTaskGetTickCount();
+
+    if (onAction) {
+      onAction(action);
+    }
+  }
+}
+
+bool MenuDrawer::handleTouchTap(int16_t x, int16_t y) {
+  if (!visible) {
+    return false;
+  }
+
+  if (showingToc || showingBookmarks || showingAnnotations) {
+    // List views: tap a row to select it directly. There is no selection highlight - the row under
+    // the finger is the row that gets acted on.
+    const int startY = tocDrawerY + drawerListTop();
+    const int pageItems = getTocPageItems();
+    const int visibleRow = (y - startY) / LIST_ITEM_HEIGHT;
+    if (visibleRow < 0 || visibleRow >= pageItems) {
+      return true;
+    }
+
+    if (showingBookmarks) {
+      if (visibleRow < static_cast<int>(bookmarkEntries.size())) {
+        bookmarkSelectedIndex = visibleRow;
+        showingBookmarks = false;
+        visible = false;
+        if (bookmarkSelectCallback) {
+          bookmarkSelectCallback(bookmarkEntries[static_cast<size_t>(visibleRow)].storageIndex);
+        }
+        lastInputTime = xTaskGetTickCount();
+      }
+      return true;
+    }
+
+    if (showingAnnotations) {
+      if (visibleRow < static_cast<int>(annotationEntries.size())) {
+        annotationSelectedIndex = visibleRow;
+        showingAnnotations = false;
+        visible = false;
+        if (annotationSelectCallback) {
+          annotationSelectCallback(annotationEntries[static_cast<size_t>(visibleRow)].storageIndex);
+        }
+        lastInputTime = xTaskGetTickCount();
+      }
+      return true;
+    }
+
+    ensureTocState();
+    const int totalItems = static_cast<int>(visibleTocIndexes.size());
+    if (totalItems == 0) {
+      return true;
+    }
+    const int itemIndex = (tocSelectedIndex / pageItems) * pageItems + visibleRow;
+    if (itemIndex >= totalItems) {
+      return true;
+    }
+    tocSelectedIndex = itemIndex;
+    const int rawTocIndex = visibleTocIndexes[static_cast<size_t>(itemIndex)];
+    if (tocItemHasChildren(rawTocIndex)) {
+      // Expand/collapse the section header instead of jumping.
+      tocExpanded[static_cast<size_t>(rawTocIndex)] = tocItemExpanded(rawTocIndex) ? 0 : 1;
+      rebuildVisibleTocItems();
+      tocSelectedIndex = std::max(0, visibleIndexForTocIndex(rawTocIndex));
+      lastInputTime = xTaskGetTickCount();
+      renderWithRefresh();
+      return true;
+    }
+    const int newSpineIndex = epub->getSpineIndexForTocIndex(rawTocIndex);
+    showingToc = false;
+    visible = false;
+    if (tocSelectionCallback) {
+      tocSelectionCallback(newSpineIndex);
+    }
+    lastInputTime = xTaskGetTickCount();
+    return true;
+  }
+
+  if (showingPercent) {
+    // Tap on the slider bar jumps straight to that percentage.
+    const int panelW = tocDrawerWidth;
+    const int centerX = tocDrawerX + panelW / 2;
+    const int barWidth = std::min(300, panelW - 80);
+    const int barX = centerX - barWidth / 2;
+    const int barY = tocDrawerY + drawerHeaderHeight() + 100;
+    if (x >= barX && x < barX + barWidth && y >= barY && y < barY + 30) {
+      percentValue_ = std::max(0, std::min(100, (x - barX) * 100 / barWidth));
+      lastInputTime = xTaskGetTickCount();
+      renderWithRefresh();
+    }
+    return true;
+  }
+
+  // Main menu: tap a row to activate it directly.
+  const int startY = drawerY + drawerListTop();
+  const int visibleRow = (y - startY) / itemHeight;
+  if (visibleRow < 0 || visibleRow >= itemsPerPage) {
+    return true;
+  }
+  const int menuIndex = scrollOffset + visibleRow;
+  if (menuIndex >= static_cast<int>(menuItems.size())) {
+    return true;
+  }
+  selectedIndex = menuIndex;
+  activateMainMenuRow(menuIndex);
+  return true;
+}
+
+bool MenuDrawer::handleTouchSwipe(int16_t dx, int16_t dy) {
+  (void)dx;
+  if (!visible) {
+    return false;
+  }
+  constexpr int kSwipeThreshold = 40;
+
+  if (showingToc) {
+    const int totalItems = static_cast<int>(visibleTocIndexes.size());
+    const int pageItems = getTocPageItems();
+    if (totalItems <= pageItems) {
+      return true;
+    }
+    if (dy <= -kSwipeThreshold) {
+      tocSelectedIndex = (tocSelectedIndex + pageItems >= totalItems) ? totalItems - 1 : tocSelectedIndex + pageItems;
+      lastInputTime = xTaskGetTickCount();
+      renderWithRefresh();
+    } else if (dy >= kSwipeThreshold) {
+      tocSelectedIndex = (tocSelectedIndex < pageItems) ? 0 : tocSelectedIndex - pageItems;
+      lastInputTime = xTaskGetTickCount();
+      renderWithRefresh();
+    }
+    return true;
+  }
+
+  if (showingBookmarks || showingAnnotations) {
+    const int totalItems = showingBookmarks ? static_cast<int>(bookmarkEntries.size())
+                                            : static_cast<int>(annotationEntries.size());
+    const int pageItems = getTocPageItems();
+    if (totalItems <= pageItems) {
+      return true;
+    }
+    int& sel = showingBookmarks ? bookmarkSelectedIndex : annotationSelectedIndex;
+    if (dy <= -kSwipeThreshold) {
+      sel = (sel + pageItems >= totalItems) ? totalItems - 1 : sel + pageItems;
+      lastInputTime = xTaskGetTickCount();
+      renderWithRefresh();
+    } else if (dy >= kSwipeThreshold) {
+      sel = (sel < pageItems) ? 0 : sel - pageItems;
+      lastInputTime = xTaskGetTickCount();
+      renderWithRefresh();
+    }
+    return true;
+  }
+
+  if (showingPercent) {
+    if (dy <= -kSwipeThreshold) {
+      percentValue_ = std::max(0, std::min(100, percentValue_ + 10));
+      lastInputTime = xTaskGetTickCount();
+      renderWithRefresh();
+    } else if (dy >= kSwipeThreshold) {
+      percentValue_ = std::max(0, std::min(100, percentValue_ - 10));
+      lastInputTime = xTaskGetTickCount();
+      renderWithRefresh();
+    }
+    return true;
+  }
+
+  // Main menu: vertical swipes move the selection one row (the list is short).
+  const int totalItems = static_cast<int>(menuItems.size());
+  if (totalItems > 0) {
+    if (dy <= -kSwipeThreshold) {
+      selectedIndex = (selectedIndex + 1) % totalItems;
+    } else if (dy >= kSwipeThreshold) {
+      selectedIndex = (selectedIndex - 1 + totalItems) % totalItems;
+    } else {
+      return true;
+    }
+    const int maxScroll = std::max(0, totalItems - itemsPerPage);
+    if (selectedIndex < scrollOffset) {
+      scrollOffset = selectedIndex;
+    } else if (selectedIndex >= scrollOffset + itemsPerPage) {
+      scrollOffset = std::min(selectedIndex - itemsPerPage + 1, maxScroll);
+    }
+    scrollOffset = std::max(0, std::min(scrollOffset, maxScroll));
+    lastInputTime = xTaskGetTickCount();
+    renderWithRefresh();
+  }
+  return true;
 }

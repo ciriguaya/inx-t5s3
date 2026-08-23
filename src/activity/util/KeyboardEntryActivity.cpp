@@ -5,23 +5,45 @@
 
 #include "KeyboardEntryActivity.h"
 
+#include <cstring>
+
 #include "system/Fonts.h"
 #include "system/MappedInputManager.h"
 
 namespace {
-constexpr int KEY_HEIGHT = 34;
-constexpr int KEY_SPACING = 5;
-constexpr int BOTTOM_MARGIN = 52;
+/** Key height - halved from 92 to 46 so the keyboard is compact and the (nearly square) keys look
+ *  proportional; 54 px between key centers is still a comfortable touch target. */
+constexpr int KEY_HEIGHT = 46;
+constexpr int KEY_SPACING = 8;
+constexpr int BOTTOM_MARGIN = 44;
 constexpr int PAGE_MARGIN = 18;
 /** Stack size (bytes) for xTaskCreate; 2048 overflowed with render() + GfxRenderer on ESP32-C3. */
 constexpr uint32_t kDisplayTaskStackBytes = 8192;
 }  // namespace
 
-const char* const KeyboardEntryActivity::keyboard[NUM_ROWS] = {"`1234567890-=", "qwertyuiop[]\\", "asdfghjkl;'",
-                                                               "zxcvbnm,./", "^  _____<OK"};
+const char* const KeyboardEntryActivity::keyboard[NUM_ROWS] = {
+    "qwertyuiop",
+    "asdfghjkl",
+    "zxcvbnm,.",
+    "!?.,'\":;-/",
+    "special",
+};
 
-const char* const KeyboardEntryActivity::keyboardShift[NUM_ROWS] = {"~!@#$%^&*()_+", "QWERTYUIOP{}|", "ASDFGHJKL:\"",
-                                                                    "ZXCVBNM<>?", "SPECIAL ROW"};
+const char* const KeyboardEntryActivity::keyboardShift[NUM_ROWS] = {
+    "QWERTYUIOP",
+    "ASDFGHJKL",
+    "ZXCVBNM<>",
+    "!?.,'\":;-/",
+    "special",
+};
+
+const char* const KeyboardEntryActivity::keyboardSymbols[NUM_ROWS] = {
+    "1234567890",
+    "!@#$%^&*()",
+    "-_=+[]{}<>",
+    "/\\|~`;:'\"?",
+    "special",
+};
 
 void KeyboardEntryActivity::taskTrampoline(void* param) {
   auto* self = static_cast<KeyboardEntryActivity*>(param);
@@ -66,24 +88,16 @@ void KeyboardEntryActivity::onExit() {
 int KeyboardEntryActivity::getRowLength(const int row) const {
   if (row < 0 || row >= NUM_ROWS) return 0;
 
-  switch (row) {
-    case 0:
-      return 13;
-    case 1:
-      return 13;
-    case 2:
-      return 11;
-    case 3:
-      return 10;
-    case 4:
-      return 10;
-    default:
-      return 0;
+  if (row == SPECIAL_ROW) {
+    return symbolsPage ? 4 : 5;  // ABC/SPACE/DEL/OK or 123/Aa/SPACE/DEL/OK
   }
+  const char* const* layout = symbolsPage ? keyboardSymbols : keyboard;
+  const char* rowStr = layout[row];
+  return rowStr ? static_cast<int>(strlen(rowStr)) : 0;
 }
 
 char KeyboardEntryActivity::getSelectedChar() const {
-  const char* const* layout = (shiftActive || capsLockActive) ? keyboardShift : keyboard;
+  const char* const* layout = symbolsPage ? keyboardSymbols : ((shiftActive || capsLockActive) ? keyboardShift : keyboard);
 
   if (selectedRow < 0 || selectedRow >= NUM_ROWS) return '\0';
   if (selectedCol < 0 || selectedCol >= getRowLength(selectedRow)) return '\0';
@@ -91,41 +105,71 @@ char KeyboardEntryActivity::getSelectedChar() const {
   return layout[selectedRow][selectedCol];
 }
 
+/** Maps a special-row column index (0-based across the row's keys) to the fixed slot semantics. */
+int KeyboardEntryActivity::specialSlotForCol(const int col) const {
+  if (symbolsPage) {
+    switch (col) {
+      case 0:
+        return SLOT_TOGGLE;  // ABC
+      case 1:
+        return SLOT_SPACE;
+      case 2:
+        return SLOT_DEL;
+      default:
+        return SLOT_OK;
+    }
+  }
+  switch (col) {
+    case 0:
+      return SLOT_TOGGLE;  // 123
+    case 1:
+      return SLOT_SHIFT;
+    case 2:
+      return SLOT_SPACE;
+    case 3:
+      return SLOT_DEL;
+    default:
+      return SLOT_OK;  // col 4
+  }
+}
+
 void KeyboardEntryActivity::handleKeyPress() {
   if (selectedRow == SPECIAL_ROW) {
-    if (selectedCol >= SHIFT_COL && selectedCol < SPACE_COL) {
-      if (capsLockActive) {
+    switch (specialSlotForCol(selectedCol)) {
+      case SLOT_TOGGLE:
+        symbolsPage = !symbolsPage;
+        shiftActive = false;
         capsLockActive = false;
-        shiftActive = false;
-      } else if (shiftActive) {
-        capsLockActive = true;
-        shiftActive = false;
-      } else {
-        shiftActive = true;
-      }
-      return;
+        selectedCol = 0;
+        break;
+      case SLOT_SHIFT:
+        if (capsLockActive) {
+          capsLockActive = false;
+          shiftActive = false;
+        } else if (shiftActive) {
+          capsLockActive = true;
+          shiftActive = false;
+        } else {
+          shiftActive = true;
+        }
+        break;
+      case SLOT_SPACE:
+        if (maxLength == 0 || text.length() < maxLength) {
+          text += ' ';
+        }
+        break;
+      case SLOT_DEL:
+        if (!text.empty()) {
+          text.pop_back();
+        }
+        break;
+      case SLOT_OK:
+        if (onComplete) {
+          onComplete(text);
+        }
+        break;
     }
-
-    if (selectedCol >= SPACE_COL && selectedCol < BACKSPACE_COL) {
-      if (maxLength == 0 || text.length() < maxLength) {
-        text += ' ';
-      }
-      return;
-    }
-
-    if (selectedCol >= BACKSPACE_COL && selectedCol < DONE_COL) {
-      if (!text.empty()) {
-        text.pop_back();
-      }
-      return;
-    }
-
-    if (selectedCol >= DONE_COL) {
-      if (onComplete) {
-        onComplete(text);
-      }
-      return;
-    }
+    return;
   }
 
   const char c = getSelectedChar();
@@ -136,57 +180,113 @@ void KeyboardEntryActivity::handleKeyPress() {
   if (maxLength == 0 || text.length() < maxLength) {
     text += c;
 
-    if (shiftActive && !capsLockActive && ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) {
+    if (!symbolsPage && shiftActive && !capsLockActive && ((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z'))) {
       shiftActive = false;
     }
   }
+}
+
+bool KeyboardEntryActivity::onTouchTap(int16_t x, int16_t y) {
+  int row = -1;
+  int col = -1;
+  if (!keyAt(x, y, row, col)) {
+    return true;  // Taps outside the keyboard are inert.
+  }
+  selectedRow = row;
+  selectedCol = col;
+  handleKeyPress();
+  updateRequired = true;
+  return true;
+}
+
+bool KeyboardEntryActivity::keyAt(int x, int y, int& row, int& col) const {
+  const int pageWidth = renderer.getScreenWidth();
+  const int keyWidth = (pageWidth - PAGE_MARGIN * 2 - (KEYS_PER_ROW - 1) * KEY_SPACING) / KEYS_PER_ROW;
+  const int keyboardAreaHeight = NUM_ROWS * (KEY_HEIGHT + KEY_SPACING);
+  const int keyboardStartY = renderer.getScreenHeight() - keyboardAreaHeight - BOTTOM_MARGIN;
+
+  if (y < keyboardStartY) {
+    return false;
+  }
+  row = (y - keyboardStartY) / (KEY_HEIGHT + KEY_SPACING);
+  if (row < 0 || row >= NUM_ROWS) {
+    return false;
+  }
+  if (row == SPECIAL_ROW) {
+    const int unitW = keyWidth + KEY_SPACING;
+    int cursor = 0;
+    int nSlots = symbolsPage ? 4 : 5;
+    int slotWidths[5] = {0, 0, 0, 0, 0};
+    if (symbolsPage) {
+      slotWidths[0] = 2;
+      slotWidths[1] = 4;
+      slotWidths[2] = 2;
+      slotWidths[3] = 2;
+    } else {
+      slotWidths[0] = 2;
+      slotWidths[1] = 2;
+      slotWidths[2] = 4;
+      slotWidths[3] = 1;
+      slotWidths[4] = 1;
+    }
+    const int rowY = keyboardStartY + row * (KEY_HEIGHT + KEY_SPACING);
+    if (y >= rowY + KEY_HEIGHT) {
+      return false;
+    }
+    for (int i = 0; i < nSlots; ++i) {
+      const int slotX = PAGE_MARGIN + cursor;
+      const int slotW = slotWidths[i] * unitW - KEY_SPACING;
+      if (x >= slotX && x < slotX + slotW) {
+        col = i;
+        return true;
+      }
+      cursor += slotWidths[i] * unitW;
+    }
+    return false;
+  }
+
+  const int rowLength = getRowLength(row);
+  const int totalRowWidth = rowLength * keyWidth + (rowLength - 1) * KEY_SPACING;
+  const int startX = (pageWidth - totalRowWidth) / 2;
+  const int rowY = keyboardStartY + row * (KEY_HEIGHT + KEY_SPACING);
+  if (y >= rowY + KEY_HEIGHT) {
+    return false;
+  }
+  for (int c = 0; c < rowLength; ++c) {
+    const int keyX = startX + c * (keyWidth + KEY_SPACING);
+    if (x >= keyX && x < keyX + keyWidth) {
+      col = c;
+      return true;
+    }
+  }
+  return false;
 }
 
 void KeyboardEntryActivity::loop() {
   if (mappedInput.wasPressed(MappedInputManager::Button::Up)) {
     if (selectedRow > 0) {
       selectedRow--;
-
-      const int maxCol = getRowLength(selectedRow) - 1;
-      if (selectedCol > maxCol) selectedCol = maxCol;
     } else {
       selectedRow = NUM_ROWS - 1;
-      const int maxCol = getRowLength(selectedRow) - 1;
-      if (selectedCol > maxCol) selectedCol = maxCol;
     }
+    const int maxCol = getRowLength(selectedRow) - 1;
+    if (selectedCol > maxCol) selectedCol = maxCol;
     updateRequired = true;
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Down)) {
     if (selectedRow < NUM_ROWS - 1) {
       selectedRow++;
-      const int maxCol = getRowLength(selectedRow) - 1;
-      if (selectedCol > maxCol) selectedCol = maxCol;
     } else {
       selectedRow = 0;
-      const int maxCol = getRowLength(selectedRow) - 1;
-      if (selectedCol > maxCol) selectedCol = maxCol;
     }
+    const int maxCol = getRowLength(selectedRow) - 1;
+    if (selectedCol > maxCol) selectedCol = maxCol;
     updateRequired = true;
   }
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Left)) {
     const int maxCol = getRowLength(selectedRow) - 1;
-
-    if (selectedRow == SPECIAL_ROW) {
-      if (selectedCol >= SHIFT_COL && selectedCol < SPACE_COL) {
-        selectedCol = maxCol;
-      } else if (selectedCol >= SPACE_COL && selectedCol < BACKSPACE_COL) {
-        selectedCol = SHIFT_COL;
-      } else if (selectedCol >= BACKSPACE_COL && selectedCol < DONE_COL) {
-        selectedCol = SPACE_COL;
-      } else if (selectedCol >= DONE_COL) {
-        selectedCol = BACKSPACE_COL;
-      }
-      updateRequired = true;
-      return;
-    }
-
     if (selectedCol > 0) {
       selectedCol--;
     } else {
@@ -197,21 +297,6 @@ void KeyboardEntryActivity::loop() {
 
   if (mappedInput.wasPressed(MappedInputManager::Button::Right)) {
     const int maxCol = getRowLength(selectedRow) - 1;
-
-    if (selectedRow == SPECIAL_ROW) {
-      if (selectedCol >= SHIFT_COL && selectedCol < SPACE_COL) {
-        selectedCol = SPACE_COL;
-      } else if (selectedCol >= SPACE_COL && selectedCol < BACKSPACE_COL) {
-        selectedCol = BACKSPACE_COL;
-      } else if (selectedCol >= BACKSPACE_COL && selectedCol < DONE_COL) {
-        selectedCol = DONE_COL;
-      } else if (selectedCol >= DONE_COL) {
-        selectedCol = SHIFT_COL;
-      }
-      updateRequired = true;
-      return;
-    }
-
     if (selectedCol < maxCol) {
       selectedCol++;
     } else {
@@ -241,10 +326,20 @@ void KeyboardEntryActivity::render() const {
 
   constexpr int titleFont = ATKINSON_HYPERLEGIBLE_16_FONT_ID;
   constexpr int inputFont = ATKINSON_HYPERLEGIBLE_12_FONT_ID;
-  constexpr int keyFont = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
+  constexpr int keyFont = ATKINSON_HYPERLEGIBLE_12_FONT_ID;
   constexpr int hintFont = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
 
-  renderer.text.render(titleFont, PAGE_MARGIN, 22, title.c_str(), true, EpdFontFamily::BOLD);
+  // Compact layout: the keyboard anchors to the bottom, and the title + input field sit directly
+  // above it (no big dead gap in the middle).
+  const int keyboardAreaHeight = NUM_ROWS * (KEY_HEIGHT + KEY_SPACING);
+  const int keyboardStartY = pageHeight - keyboardAreaHeight - BOTTOM_MARGIN;
+
+  const int inputX = PAGE_MARGIN;
+  const int inputW = pageWidth - PAGE_MARGIN * 2;
+  constexpr int inputH = 56;
+  const int inputY = keyboardStartY - inputH - 24;
+
+  renderer.text.render(titleFont, PAGE_MARGIN, inputY - 40, title.c_str(), true, EpdFontFamily::BOLD);
 
   std::string displayText;
   if (isPassword) {
@@ -255,10 +350,6 @@ void KeyboardEntryActivity::render() const {
 
   displayText += "_";
 
-  const int inputX = PAGE_MARGIN;
-  const int inputY = 62;
-  const int inputW = pageWidth - PAGE_MARGIN * 2;
-  constexpr int inputH = 56;
   renderer.rectangle.render(inputX, inputY, inputW, inputH, true, true);
 
   std::string inputLine = renderer.text.truncate(inputFont, displayText.c_str(), inputW - 24);
@@ -273,13 +364,8 @@ void KeyboardEntryActivity::render() const {
     renderer.text.render(hintFont, inputX + inputW - countW - 10, inputY + inputH + 8, countText, true);
   }
 
-  const int keyboardAreaHeight = NUM_ROWS * (KEY_HEIGHT + KEY_SPACING);
-  const int keyboardStartY = pageHeight - keyboardAreaHeight - BOTTOM_MARGIN;
-
-  const char* const* layout = (shiftActive || capsLockActive) ? keyboardShift : keyboard;
-
-  const int maxKeysInRow = 13;
-  const int keyWidth = (pageWidth - PAGE_MARGIN * 2 - (maxKeysInRow - 1) * KEY_SPACING) / maxKeysInRow;
+  const int keyWidth = (pageWidth - PAGE_MARGIN * 2 - (KEYS_PER_ROW - 1) * KEY_SPACING) / KEYS_PER_ROW;
+  const int unitW = keyWidth + KEY_SPACING;
 
   auto drawKey = [&](const int x, const int y, const int w, const int h, const char* label, const bool selected,
                      const bool emphasized = false) {
@@ -305,37 +391,52 @@ void KeyboardEntryActivity::render() const {
 
   for (int row = 0; row < NUM_ROWS; row++) {
     const int rowY = keyboardStartY + row * (KEY_HEIGHT + KEY_SPACING);
-    const int rowLength = getRowLength(row);
 
-    if (row == 4) {
-      const int shiftWidth = 2 * keyWidth + KEY_SPACING;
-      const int spaceWidth = 5 * keyWidth + 4 * KEY_SPACING;
-      const int backspaceWidth = 2 * keyWidth + KEY_SPACING;
-      const int okWidth = 2 * keyWidth + KEY_SPACING;
-
-      const int totalRowWidth = shiftWidth + spaceWidth + backspaceWidth + okWidth + 3 * KEY_SPACING;
-      const int startX = (pageWidth - totalRowWidth) / 2;
-
-      int currentX = startX;
-
-      const bool shiftSelected = (selectedRow == 4 && selectedCol >= SHIFT_COL && selectedCol < SPACE_COL);
-      const char* shiftLabel = capsLockActive ? "CAPS" : (shiftActive ? "SHIFT" : "Aa");
-      drawKey(currentX, rowY, shiftWidth, KEY_HEIGHT, shiftLabel, shiftSelected, shiftActive || capsLockActive);
-      currentX += shiftWidth + KEY_SPACING;
-
-      const bool spaceSelected = (selectedRow == 4 && selectedCol >= SPACE_COL && selectedCol < BACKSPACE_COL);
-      drawKey(currentX, rowY, spaceWidth, KEY_HEIGHT, "SPACE", spaceSelected);
-      currentX += spaceWidth + KEY_SPACING;
-
-      const bool bsSelected = (selectedRow == 4 && selectedCol >= BACKSPACE_COL && selectedCol < DONE_COL);
-      drawKey(currentX, rowY, backspaceWidth, KEY_HEIGHT, "DEL", bsSelected);
-      currentX += backspaceWidth + KEY_SPACING;
-
-      const bool okSelected = (selectedRow == 4 && selectedCol >= DONE_COL);
-      drawKey(currentX, rowY, okWidth, KEY_HEIGHT, "OK", okSelected, true);
+    if (row == SPECIAL_ROW) {
+      int slotWidths[5] = {0, 0, 0, 0, 0};
+      int nSlots = 0;
+      const char* labels[5] = {nullptr, nullptr, nullptr, nullptr, nullptr};
+      if (symbolsPage) {
+        slotWidths[0] = 2;
+        slotWidths[1] = 4;
+        slotWidths[2] = 2;
+        slotWidths[3] = 2;
+        nSlots = 4;
+        labels[0] = "ABC";
+        labels[1] = "SPACE";
+        labels[2] = "DEL";
+        labels[3] = "OK";
+      } else {
+        slotWidths[0] = 2;
+        slotWidths[1] = 2;
+        slotWidths[2] = 4;
+        slotWidths[3] = 1;
+        slotWidths[4] = 1;
+        nSlots = 5;
+        labels[0] = "123";
+        labels[1] = capsLockActive ? "CAPS" : (shiftActive ? "SHIFT" : "Aa");
+        labels[2] = "SPACE";
+        labels[3] = "DEL";
+        labels[4] = "OK";
+      }
+      int cursor = 0;
+      for (int i = 0; i < nSlots; ++i) {
+        const int keyX = PAGE_MARGIN + cursor;
+        const int keyW = slotWidths[i] * unitW - KEY_SPACING;
+        const bool isSelected = (selectedRow == SPECIAL_ROW && selectedCol == i);
+        const bool emphasized = (labels[i] && strcmp(labels[i], "OK") == 0) ||
+                                (labels[i] && strcmp(labels[i], "SHIFT") == 0) ||
+                                (labels[i] && strcmp(labels[i], "CAPS") == 0);
+        drawKey(keyX, rowY, keyW, KEY_HEIGHT, labels[i] ? labels[i] : "", isSelected, emphasized);
+        cursor += slotWidths[i] * unitW;
+      }
     } else {
+      const int rowLength = getRowLength(row);
       const int totalRowWidth = rowLength * keyWidth + (rowLength - 1) * KEY_SPACING;
       const int startX = (pageWidth - totalRowWidth) / 2;
+
+      const char* const* layout =
+          symbolsPage ? keyboardSymbols : ((shiftActive || capsLockActive) ? keyboardShift : keyboard);
 
       for (int col = 0; col < rowLength; col++) {
         const char c = layout[row][col];

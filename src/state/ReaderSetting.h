@@ -76,7 +76,7 @@ class ReaderSetting {
    *  narrower 4-option READER_SHORT_PWRBTN enum; that field stays for serialization backward-compat
    *  (loadFromFile() migrates its value into this field on first load of an older settings file) but is
    *  no longer consulted by the reader. */
-  uint8_t btnPowerShortAction = 6;  ///< BTN_ACTION_PAGE_REFRESH
+  uint8_t btnPowerShortAction = 14;  ///< BTN_ACTION_OPEN_MENU (T5S3: PWR button opens the book menu)
 
   uint8_t orientation = 0;  ///< SystemSetting::PORTRAIT
 

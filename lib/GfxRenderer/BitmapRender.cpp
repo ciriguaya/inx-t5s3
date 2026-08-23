@@ -87,12 +87,12 @@ void maskBitmapCornersOutsideRounded(const GfxRenderer& gfx, const int x, const 
     }
     if (style == BitmapRender::RoundedOutside::PaperOutside ||
         style == BitmapRender::RoundedOutside::SubtlePaperOutside) {
-      gfx.drawPixel(px, py, false);
+      gfx.drawPixelRaw(px, py, false);
     } else {
       // Screen-fixed 1/4 tone so corner touch-up matches carousel/list dithers that use the same lattice
       // (see RecentActivity drawFlowCarouselBackdrop*), independent of bitmap (x,y).
       const bool ink = ((px & 1) == 0) && ((py & 1) == 0);
-      gfx.drawPixel(px, py, ink);
+      gfx.drawPixelRaw(px, py, ink);
     }
   };
 
@@ -163,7 +163,7 @@ inline bool gray2MsbShouldClear2bpp(const uint8_t stage03) {
 void drawBwFrom2bppStage(const GfxRenderer& gfx, const int px, const int py, const uint8_t stage03) {
   const uint8_t v = static_cast<uint8_t>(stage03 & 3u);
   if (FourToneImageDitherer::bwPreviewInkForLevel(v, px, py)) {
-    gfx.drawPixel(px, py, true);
+    gfx.drawPixelRaw(px, py, true);  // image pixels: never night-mode inverted
   }
 }
 
@@ -252,19 +252,19 @@ void BitmapRender::render(const Bitmap& bitmap, const int x, const int y, const 
     if (gfx.renderMode == GfxRenderer::BW) {
       if (bwShouldInk2bpp(displayVal, mode)) {
         if (mode == ImageRenderMode::TwoBit) {
-          gfx.drawPixel(screenX, screenY, true);
+          gfx.drawPixelRaw(screenX, screenY, true);
         } else {
           drawBwFrom2bppStage(gfx, screenX, screenY, displayVal);
         }
       }
     } else if (gfx.renderMode == GfxRenderer::GRAYSCALE_MSB && grayMsbShouldInk2bpp(displayVal, gfx.deviceIsX3())) {
-      gfx.drawPixel(screenX, screenY, false);
+      gfx.drawPixelRaw(screenX, screenY, false);
     } else if (gfx.renderMode == GfxRenderer::GRAYSCALE_LSB && grayLsbShouldInk2bpp(displayVal, gfx.deviceIsX3())) {
-      gfx.drawPixel(screenX, screenY, false);
+      gfx.drawPixelRaw(screenX, screenY, false);
     } else if (gfx.renderMode == GfxRenderer::GRAY2_LSB && gray2LsbShouldClear2bpp(displayVal)) {
-      gfx.drawPixel(screenX, screenY, true);
+      gfx.drawPixelRaw(screenX, screenY, true);
     } else if (gfx.renderMode == GfxRenderer::GRAY2_MSB && gray2MsbShouldClear2bpp(displayVal)) {
-      gfx.drawPixel(screenX, screenY, true);
+      gfx.drawPixelRaw(screenX, screenY, true);
     }
   };
 
@@ -396,13 +396,13 @@ void BitmapRender::oneBit(const Bitmap& bitmap, const int x, const int y, const 
         drawBwFrom2bppStage(gfx, screenX, screenY, val);
       }
     } else if (gfx.renderMode == GfxRenderer::GRAYSCALE_MSB && grayMsbShouldInk2bpp(val, gfx.deviceIsX3())) {
-      gfx.drawPixel(screenX, screenY, false);
+      gfx.drawPixelRaw(screenX, screenY, false);
     } else if (gfx.renderMode == GfxRenderer::GRAYSCALE_LSB && grayLsbShouldInk2bpp(val, gfx.deviceIsX3())) {
-      gfx.drawPixel(screenX, screenY, false);
+      gfx.drawPixelRaw(screenX, screenY, false);
     } else if (gfx.renderMode == GfxRenderer::GRAY2_LSB && gray2LsbShouldClear2bpp(val)) {
-      gfx.drawPixel(screenX, screenY, true);
+      gfx.drawPixelRaw(screenX, screenY, true);
     } else if (gfx.renderMode == GfxRenderer::GRAY2_MSB && gray2MsbShouldClear2bpp(val)) {
-      gfx.drawPixel(screenX, screenY, true);
+      gfx.drawPixelRaw(screenX, screenY, true);
     }
   };
 
@@ -646,7 +646,7 @@ void BitmapRender::transparent(const Bitmap& bitmap, int x, int y, int maxWidth,
             drawBwFrom2bppStage(gfx, destX, destY, val);
           }
         } else {
-          gfx.drawPixel(destX, destY, true);
+          gfx.drawPixelRaw(destX, destY, true);
         }
       }
     }
@@ -708,7 +708,7 @@ static void renderBitmap1Bit(const GfxRenderer& gfx, const Bitmap& bitmap, const
       const uint8_t val = outRow[bmpX / 4] >> (6 - ((bmpX * 2) % 8)) & 0x3;
 
       if (val == 1 || val == 3) {
-        gfx.drawPixel(screenX, screenY, true);
+        gfx.drawPixelRaw(screenX, screenY, true);  // sleep-screen image: never inverted
       }
     }
   }

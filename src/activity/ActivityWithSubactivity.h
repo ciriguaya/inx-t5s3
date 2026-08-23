@@ -26,4 +26,7 @@ class ActivityWithSubactivity : public Activity {
   void loop() override;
   /** Cleans up the current subactivity on exit. */
   void onExit() override;
+
+  /** Returns the active sub-activity (or nullptr) so touch can be routed to it. */
+  Activity* activeSubActivity() override { return subActivity.get(); }
 };

@@ -147,6 +147,61 @@ void OpdsBookBrowserActivity::loop() {
   }
 }
 
+bool OpdsBookBrowserActivity::onTouchTap(int16_t x, int16_t y) {
+  if (state == BrowserState::ERROR) {
+    // Same as Confirm: retry, or relaunch WiFi selection when disconnected.
+    if (WiFi.status() == WL_CONNECTED && WiFi.localIP() != IPAddress(0, 0, 0, 0)) {
+      state = BrowserState::LOADING;
+      statusMessage = "Loading...";
+      updateRequired = true;
+      fetchFeed(currentPath);
+    } else {
+      launchWifiSelection();
+    }
+    return true;
+  }
+  if (state != BrowserState::BROWSING || entries.empty()) {
+    return true;
+  }
+  const int bodyTop = INX_THEME.drawerPageHeaderHeight();
+  const int pageStart = selectorIndex / PAGE_ITEMS * PAGE_ITEMS;
+  const int row = (y - bodyTop) / kListItemHeight;
+  if (row < 0 || row >= PAGE_ITEMS) {
+    return true;
+  }
+  const int index = pageStart + row;
+  if (index >= static_cast<int>(entries.size())) {
+    return true;
+  }
+  selectorIndex = index;
+  const auto& entry = entries[static_cast<size_t>(selectorIndex)];
+  if (entry.type == OpdsEntryType::BOOK) {
+    downloadBook(entry);
+  } else {
+    navigateToEntry(entry);
+  }
+  return true;
+}
+
+bool OpdsBookBrowserActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)dx;
+  (void)endX;
+  (void)endY;
+  if (state != BrowserState::BROWSING || entries.empty()) {
+    return true;
+  }
+  constexpr int kSwipeThreshold = 40;
+  const int total = static_cast<int>(entries.size());
+  if (dy <= -kSwipeThreshold) {
+    selectorIndex = ((selectorIndex / PAGE_ITEMS + 1) * PAGE_ITEMS) % total;
+    updateRequired = true;
+  } else if (dy >= kSwipeThreshold) {
+    selectorIndex = ((selectorIndex / PAGE_ITEMS - 1) * PAGE_ITEMS + total) % total;
+    updateRequired = true;
+  }
+  return true;
+}
+
 /** Background task loop that renders the screen when an update is required. */
 void OpdsBookBrowserActivity::displayTaskLoop() {
   while (true) {

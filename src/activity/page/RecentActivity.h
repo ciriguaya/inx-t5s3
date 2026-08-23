@@ -78,7 +78,6 @@ class RecentActivity final : public Activity, public Menu {
   bool updateRequired = false;
   bool bookSelected = false;
   int scrollOffset = 0;
-
   std::vector<RecentBook> recentBooks;
   struct CachedRecentStats {
     bool attempted = false;
@@ -97,6 +96,24 @@ class RecentActivity final : public Activity, public Menu {
   const std::function<void(const std::string& path)> onSelectBook;
   const std::function<void()> onGoToStatistics;
   const std::function<void()> onGoToRecent;
+  const std::function<void()> onGoToQuotes;
+  const std::function<void()> onSettingsOpen;
+  const std::function<void()> onSyncOpen;
+
+  /** Height reserved at the top of the Recent body for the latest-highlight banner. */
+  static constexpr int HIGHLIGHT_BANNER_HEIGHT = 168;
+  bool hasLatestHighlight = false;
+  std::string latestQuoteText;
+  std::string latestQuoteBook;
+  bool latestQuoteOpenPending = false;
+
+  /** True when the latest-highlight banner is currently shown (tab 0 and a highlight exists). */
+  bool bannerVisible() const { return tabSelectorIndex == 0 && hasLatestHighlight; }
+
+  /** Renders the latest-highlight banner card at the top of the Recent body. */
+  void renderHighlightBanner();
+  /** Loads the latest highlight from /highlights for the banner. */
+  void loadLatestHighlight();
 
   /**
    * Formats a time duration in milliseconds to a human-readable string.
@@ -170,9 +187,9 @@ class RecentActivity final : public Activity, public Menu {
                             const std::string& placeholderTitle, int placeholderFontId);
 
   /** Tab-relative Y where each Recent view paints its body (keeps constants out of layout engine defs). */
-  int recentGridPaintStartY() const { return mainContentTop() + 16; }
-  int recentIconsPaintStartY() const { return mainContentTop() + 6; }
-  int recentListPaintStartY() const { return mainContentTop(); }
+  int recentGridPaintStartY() const { return mainContentTop() + (bannerVisible() ? HIGHLIGHT_BANNER_HEIGHT : 0) + 16; }
+  int recentIconsPaintStartY() const { return mainContentTop() + (bannerVisible() ? HIGHLIGHT_BANNER_HEIGHT : 0) + 6; }
+  int recentListPaintStartY() const { return mainContentTop() + (bannerVisible() ? HIGHLIGHT_BANNER_HEIGHT : 0); }
 
   /**
    * View-mode paint strategy: one implementation per `ViewMode`, created by `makeLayoutEngine`.
@@ -222,6 +239,8 @@ class RecentActivity final : public Activity, public Menu {
    */
   void navigateToSelectedMenu() override {
     if (tabSelectorIndex == 1) onLibraryOpen();
+    if (tabSelectorIndex == 2) onSettingsOpen();
+    if (tabSelectorIndex == 3) onSyncOpen();
     if (tabSelectorIndex == 4) onGoToStatistics();
   }
 
@@ -241,13 +260,19 @@ class RecentActivity final : public Activity, public Menu {
   explicit RecentActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                           const std::function<void()>& onLibraryOpen, const std::function<void()>& onGoToStatistics,
                           const std::function<void(const std::string& path)>& onSelectBook,
-                          const std::function<void()>& onGoToRecent)
+                          const std::function<void()>& onGoToRecent,
+                          const std::function<void()>& onGoToQuotes,
+                          const std::function<void()>& onSettingsOpen = nullptr,
+                          const std::function<void()>& onSyncOpen = nullptr)
       : Activity("Recent", renderer, mappedInput),
         Menu(),
         onLibraryOpen(onLibraryOpen),
         onSelectBook(onSelectBook),
         onGoToStatistics(onGoToStatistics),
         onGoToRecent(onGoToRecent),
+        onGoToQuotes(onGoToQuotes),
+        onSettingsOpen(onSettingsOpen),
+        onSyncOpen(onSyncOpen),
         hasRandomFavorite(false) {}
   ~RecentActivity() override;
 
@@ -275,6 +300,13 @@ class RecentActivity final : public Activity, public Menu {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  bool onTouchTap(int16_t x, int16_t y) override;
+  bool onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) override;
+  bool onTouchHold(int16_t x, int16_t y, unsigned long heldMs) override;
+  void requestRedraw() override { updateRequired = true; }
+
+  /** Maps a touch point to a recent-book index in the current view mode, or -1. */
+  int touchIndexForRecentPoint(int x, int y) const;
 
   RecentBook randomFavoriteBook;
   bool hasRandomFavorite;

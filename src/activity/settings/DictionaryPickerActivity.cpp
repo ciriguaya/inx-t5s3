@@ -127,6 +127,59 @@ void DictionaryPickerActivity::loop() {
   }
 }
 
+bool DictionaryPickerActivity::onTouchTap(int16_t x, int16_t y) {
+  (void)x;
+  const int total = static_cast<int>(folders_.size());
+  if (total == 0) {
+    return true;
+  }
+  const int bodyTop = INX_THEME.drawerPageHeaderHeight();
+  const int screenH = renderer.getScreenHeight();
+  const int listBottom = screenH - 44;
+  const int visibleRows = std::max(1, (listBottom - bodyTop) / kRowH);
+  const int row = (y - bodyTop) / kRowH;
+  if (row < 0 || row >= visibleRows) {
+    return true;
+  }
+  const int index = scrollOffset_ + row;
+  if (index >= total) {
+    return true;
+  }
+  selectedIndex_ = index;
+  const std::string& chosen = folders_[static_cast<size_t>(selectedIndex_)];
+  strncpy(READER_SETTINGS.dictionaryFolder, chosen.c_str(), sizeof(READER_SETTINGS.dictionaryFolder) - 1);
+  READER_SETTINGS.dictionaryFolder[sizeof(READER_SETTINGS.dictionaryFolder) - 1] = '\0';
+  READER_SETTINGS.saveToFile();
+  goBack_();
+  return true;
+}
+
+bool DictionaryPickerActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)dx;
+  (void)endX;
+  (void)endY;
+  const int total = static_cast<int>(folders_.size());
+  if (total == 0) {
+    return true;
+  }
+  const int bodyTop = INX_THEME.drawerPageHeaderHeight();
+  const int screenH = renderer.getScreenHeight();
+  const int listBottom = screenH - 44;
+  const int visibleRows = std::max(1, (listBottom - bodyTop) / kRowH);
+  const int maxScroll = std::max(0, total - visibleRows);
+  constexpr int kSwipeThreshold = 40;
+  if (dy <= -kSwipeThreshold) {
+    scrollOffset_ = std::min(scrollOffset_ + visibleRows, maxScroll);
+    selectedIndex_ = scrollOffset_;
+    render();
+  } else if (dy >= kSwipeThreshold) {
+    scrollOffset_ = std::max(scrollOffset_ - visibleRows, 0);
+    selectedIndex_ = scrollOffset_;
+    render();
+  }
+  return true;
+}
+
 void DictionaryPickerActivity::render() {
   renderer.clearScreen();
   const int screenW = renderer.getScreenWidth();

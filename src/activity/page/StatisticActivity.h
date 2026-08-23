@@ -33,6 +33,8 @@ class StatisticActivity final : public Activity, public Menu {
   GlobalReadingStats globalStats;
 
   const std::function<void()> onGoToRecent;
+  const std::function<void()> onLibraryOpen;
+  const std::function<void()> onSettingsOpen;
   const std::function<void()> onSyncOpen;
 
   /**
@@ -69,11 +71,17 @@ class StatisticActivity final : public Activity, public Menu {
 
   /**
    * Navigates to the selected tab.
-   * Tab indices: 0 = Home, 3 = Sync
+   * Tab indices: 0 = Home, 1 = Library, 2 = Settings, 3 = Sync (4 = this page).
    */
   void navigateToSelectedMenu() override {
     if (tabSelectorIndex == 0 && onGoToRecent) {
       onGoToRecent();
+    }
+    if (tabSelectorIndex == 1 && onLibraryOpen) {
+      onLibraryOpen();
+    }
+    if (tabSelectorIndex == 2 && onSettingsOpen) {
+      onSettingsOpen();
     }
     if (tabSelectorIndex == 3 && onSyncOpen) {
       onSyncOpen();
@@ -91,10 +99,14 @@ class StatisticActivity final : public Activity, public Menu {
    */
   explicit StatisticActivity(GfxRenderer& renderer, MappedInputManager& mappedInput,
                              const std::function<void()>& onGoToRecent,
-                             const std::function<void()>& onSyncOpen = nullptr)
+                             const std::function<void()>& onSyncOpen = nullptr,
+                             const std::function<void()>& onLibraryOpen = nullptr,
+                             const std::function<void()>& onSettingsOpen = nullptr)
       : Activity("Statistics", renderer, mappedInput),
         Menu(),
         onGoToRecent(onGoToRecent),
+        onLibraryOpen(onLibraryOpen),
+        onSettingsOpen(onSettingsOpen),
         onSyncOpen(onSyncOpen),
         viewIndex(0),
         updateRequired(false) {
@@ -104,4 +116,7 @@ class StatisticActivity final : public Activity, public Menu {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  bool onTouchTap(int16_t x, int16_t y) override;
+  bool onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) override;
+  void requestRedraw() override { updateRequired = true; }
 };

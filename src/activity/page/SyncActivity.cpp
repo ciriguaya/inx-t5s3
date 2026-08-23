@@ -159,6 +159,46 @@ void SyncActivity::loop() {
   }
 }
 
+bool SyncActivity::onTouchTap(int16_t x, int16_t y) {
+  if (subActivity) {
+    return true;  // The sub-activity owns the screen.
+  }
+
+  if (handleTabBarTouchTap(renderer, x, y)) {
+    return true;
+  }
+
+  const int listStartY = mainContentTop() + mainHeaderHeight();
+  const int index = (y - listStartY) / LIST_ITEM_HEIGHT;
+  if (y >= listStartY && index >= 0 && index < MENU_ITEM_COUNT) {
+    selectedIndex = index;
+    updateRequired = true;
+    // Activate through the same Confirm path the button UI uses.
+    mappedInput.injectButtonTap(MappedInputManager::Button::Confirm);
+  }
+  return true;
+}
+
+bool SyncActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)endX;
+  (void)endY;
+  if (subActivity) {
+    return true;
+  }
+  constexpr int kSwipeThreshold = 40;
+  if (dx <= -kSwipeThreshold) {
+    tabSelectorIndex = (tabSelectorIndex + 1) % TAB_COUNT;
+    navigateToSelectedMenu();
+    return true;
+  }
+  if (dx >= kSwipeThreshold) {
+    tabSelectorIndex = (tabSelectorIndex - 1 + TAB_COUNT) % TAB_COUNT;
+    navigateToSelectedMenu();
+    return true;
+  }
+  return true;
+}
+
 /**
  * Renders the complete sync activity view including menu items and tab bar.
  */

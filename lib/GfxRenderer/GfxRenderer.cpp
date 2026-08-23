@@ -93,7 +93,7 @@ __attribute__((optimize("O2"))) void GfxRenderer::rotateCoordinates(const int x,
   }
 }
 
-__attribute__((optimize("O2"))) void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
+__attribute__((optimize("O2"))) void GfxRenderer::drawPixelRaw(const int x, const int y, const bool state) const {
   uint8_t* frameBuffer = display.getFrameBuffer();
 
   if (!frameBuffer) {
@@ -118,6 +118,14 @@ __attribute__((optimize("O2"))) void GfxRenderer::drawPixel(const int x, const i
   } else {
     frameBuffer[byteIndex] |= 1 << bitPosition;
   }
+}
+
+__attribute__((optimize("O2"))) void GfxRenderer::drawPixel(const int x, const int y, const bool state) const {
+  // Night mode inverts black<->white for UI pixels (text, fills, lines, icons). Grayscale passes use
+  // drawPixel for LUT-buffer marking and must NOT be inverted. Images draw via drawPixelRaw() and are
+  // never affected.
+  const bool effectiveState = (nightMode && renderMode == BW) ? !state : state;
+  drawPixelRaw(x, y, effectiveState);
 }
 
 bool GfxRenderer::readPixel(const int x, const int y) const {
@@ -193,7 +201,18 @@ void GfxRenderer::drawPackedRow1bpp(const int x, const int y, const int width, c
   }
 }
 
-void GfxRenderer::clearScreen(const uint8_t color) const { display.clearScreen(color); }
+void GfxRenderer::clearScreen(const uint8_t color) const {
+  uint8_t effectiveColor = color;
+  if (nightMode && renderMode == BW) {
+    // The default white (0xFF) clear becomes black (0x00) and vice versa; other tones pass through.
+    if (color == 0xFF) {
+      effectiveColor = 0x00;
+    } else if (color == 0x00) {
+      effectiveColor = 0xFF;
+    }
+  }
+  display.clearScreen(effectiveColor);
+}
 
 void GfxRenderer::invertScreen() const {
   uint8_t* buffer = display.getFrameBuffer();

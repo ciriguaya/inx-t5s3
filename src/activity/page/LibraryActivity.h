@@ -94,6 +94,8 @@ class LibraryActivity final : public Activity, public Menu {
                            const std::function<void()>& onGoToRecent,
                            const std::function<void(const std::string& path)>& onSelectBook,
                            const std::function<void()>& onRecentOpen, const std::function<void()>& onSettingsOpen,
+                           const std::function<void()>& onSyncOpen = nullptr,
+                           const std::function<void()>& onStatisticsOpen = nullptr,
                            const std::string& initialPath = "/");
   /**
    * @brief Destroy the Library Activity, stopping the display task and releasing resources
@@ -114,7 +116,7 @@ class LibraryActivity final : public Activity, public Menu {
   void onEnter() override;
 
   /**
-   * @brief Called when exiting the activity
+   * @brief Called when leaving the activity
    */
   void onExit() override;
 
@@ -122,6 +124,9 @@ class LibraryActivity final : public Activity, public Menu {
    * @brief Main loop for handling user input
    */
   void loop() override;
+  bool onTouchTap(int16_t x, int16_t y) override;
+  bool onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) override;
+  void requestRedraw() override { updateRequired = true; }
 
   /**
    * @brief Load library items from index file (optimized mode)
@@ -209,17 +214,24 @@ class LibraryActivity final : public Activity, public Menu {
   const std::function<void()> onGoToRecent;                         ///< Callback to go to recent books
   const std::function<void(const std::string& path)> onSelectBook;  ///< Callback to open a book
   const std::function<void()> onRecentOpen;                         ///< Callback to open recent tab
+  /** Maps a touch point to a library item index in the current view, or -1. */
+  int libraryItemIndexForTouch(int x, int y) const;
+
   const std::function<void()> onSettingsOpen;                       ///< Callback to open settings tab
+  const std::function<void()> onSyncOpen;                           ///< Callback to open sync tab
+  const std::function<void()> onStatisticsOpen;                     ///< Callback to open statistics tab
 
   ViewMode currentViewMode;  ///< Current display mode
   SortMode currentSortMode;  ///< Current sorting mode
 
   /**
-   * @brief Navigate to selected menu item (Recent or Settings)
+   * @brief Navigate to selected menu item (Recent, Settings, Sync, or Stats)
    */
   void navigateToSelectedMenu() override {
     if (tabSelectorIndex == 0) onRecentOpen();
     if (tabSelectorIndex == 2) onSettingsOpen();
+    if (tabSelectorIndex == 3) onSyncOpen();
+    if (tabSelectorIndex == 4) onStatisticsOpen();
   }
 
   /**

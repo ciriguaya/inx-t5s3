@@ -18,6 +18,8 @@
 
 namespace {
 constexpr int LIST_ITEM_HEIGHT = UiTheme::DRAWER_LIST_ITEM_HEIGHT;
+/** Scan attempts before giving up (each retry uses a slower/more reliable scan). */
+constexpr int kMaxScanAttempts = 3;
 }  // namespace
 
 /**
@@ -82,6 +84,7 @@ void WifiSelectionActivity::onExit() {
   cachedMacAddress.clear();
 
   const bool keepStaForParent = (WiFi.status() == WL_CONNECTED) && (WiFi.localIP() != IPAddress(0, 0, 0, 0));
+  WiFi.persistent(false);
   if (!keepStaForParent) {
     WiFi.disconnect(true);
     WiFi.mode(WIFI_OFF);
@@ -102,21 +105,33 @@ void WifiSelectionActivity::onExit() {
 
 /**
  * @brief Starts an asynchronous WiFi network scan
+ *
+ * Reuses the old T5S3 reader's reliable pattern: a full STA radio restart plus modem-sleep off
+ * before scanning, and later attempts fall back to a passive scan with a longer per-channel time.
+ * A stale STA/AP state or WiFi modem sleep is what made scans intermittently return nothing.
  */
 void WifiSelectionActivity::startWifiScan() {
   state = WifiSelectionState::SCANNING;
   networks.clear();
   updateRequired = true;
 
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
+  WiFi.scanDelete();
+  WiFi.mode(WIFI_OFF);
+  delay(150);
   WiFi.mode(WIFI_STA);
-  WiFi.disconnect();
-  delay(100);
+  WiFi.disconnect(false, false);
+  delay(150);
 
-  WiFi.scanNetworks(true);
+  const bool passiveScan = scanAttempt_ >= 2;
+  const uint32_t maxMsPerChannel = scanAttempt_ == 0 ? 350 : (scanAttempt_ == 1 ? 700 : 1000);
+  WiFi.scanNetworks(true, true, passiveScan, maxMsPerChannel);  // async, include hidden AP records
 }
 
 /**
- * @brief Processes the results of a WiFi scan
+ * @brief Processes the results of a WiFi scan, retrying with a slower/more reliable scan when the
+ *        first attempts come back failed or empty (instead of showing "no networks").
  */
 void WifiSelectionActivity::processWifiScanResults() {
   const int16_t scanResult = WiFi.scanComplete();
@@ -126,8 +141,13 @@ void WifiSelectionActivity::processWifiScanResults() {
   }
 
   if (scanResult == WIFI_SCAN_FAILED) {
-    state = WifiSelectionState::NETWORK_LIST;
-    updateRequired = true;
+    if (scanAttempt_ + 1 < kMaxScanAttempts) {
+      scanAttempt_++;
+      startWifiScan();
+    } else {
+      state = WifiSelectionState::NETWORK_LIST;
+      updateRequired = true;
+    }
     return;
   }
 
@@ -158,6 +178,15 @@ void WifiSelectionActivity::processWifiScanResults() {
 
   networks.clear();
   networks.insert(networks.end(), uniqueNetworks.begin(), uniqueNetworks.end());
+
+  if (networks.empty() && scanAttempt_ + 1 < kMaxScanAttempts) {
+    scanAttempt_++;
+    startWifiScan();
+    return;
+  }
+
+  scanAttempt_ = 0;
+  listScrollOffset_ = 0;
 
   std::sort(networks.begin(), networks.end(),
             [](const WifiNetworkInfo& a, const WifiNetworkInfo& b) { return a.rssi > b.rssi; });
@@ -226,7 +255,13 @@ void WifiSelectionActivity::attemptConnection() {
   connectionError.clear();
   updateRequired = true;
 
+  // Same hardening as the scan path: no NVS auto-connect interference, no modem sleep, and abort any
+  // in-progress SDK auto-connect before starting fresh.
+  WiFi.persistent(false);
+  WiFi.setSleep(false);
   WiFi.mode(WIFI_STA);
+  WiFi.disconnect(true, true);
+  delay(100);
 
   if (selectedRequiresPassword && !enteredPassword.empty()) {
     WiFi.begin(selectedSSID.c_str(), enteredPassword.c_str());
@@ -404,6 +439,120 @@ void WifiSelectionActivity::loop() {
   }
 }
 
+bool WifiSelectionActivity::onTouchTap(int16_t x, int16_t y) {
+  const int screenWidth = renderer.getScreenWidth();
+  const int listStartY = INX_THEME.drawerPageHeaderHeight();  // matches render's dividerY
+  switch (state) {
+    case WifiSelectionState::NETWORK_LIST: {
+      if (networks.empty()) {
+        startWifiScan();  // tap anywhere rescans
+        return true;
+      }
+      const int visibleAreaHeight = renderer.getScreenHeight() - listStartY - 80;
+      const int maxVisibleNetworks = std::max(1, visibleAreaHeight / LIST_ITEM_HEIGHT);
+      const int maxScroll = std::max(0, static_cast<int>(networks.size()) - maxVisibleNetworks);
+      listScrollOffset_ = std::min(listScrollOffset_, maxScroll);
+      if (y < listStartY) {
+        return true;
+      }
+      const int index = listScrollOffset_ + (y - listStartY) / LIST_ITEM_HEIGHT;
+      if (index >= 0 && index < static_cast<int>(networks.size())) {
+        selectNetwork(index);
+      }
+      return true;
+    }
+    case WifiSelectionState::SAVE_PROMPT: {
+      const int buttonY = listStartY + 30 + 50;
+      constexpr int buttonWidth = 60;
+      constexpr int buttonSpacing = 30;
+      const int startX = (screenWidth - (buttonWidth * 2 + buttonSpacing)) / 2;
+      if (y >= buttonY && y < buttonY + 44) {
+        if (x >= startX && x < startX + buttonWidth) {
+          savePromptSelection = 0;
+          xSemaphoreTake(renderingMutex, portMAX_DELAY);
+          WIFI_STORE.addCredential(selectedSSID, enteredPassword);
+          xSemaphoreGive(renderingMutex);
+          onComplete(true);
+          return true;
+        }
+        if (x >= startX + buttonWidth + buttonSpacing &&
+            x < startX + buttonWidth + buttonSpacing + buttonWidth) {
+          savePromptSelection = 1;
+          onComplete(true);
+          return true;
+        }
+      }
+      return true;
+    }
+    case WifiSelectionState::FORGET_PROMPT: {
+      const int buttonY = listStartY + 30 + 50;
+      constexpr int buttonWidth = 120;
+      constexpr int buttonSpacing = 30;
+      const int startX = (screenWidth - (buttonWidth * 2 + buttonSpacing)) / 2;
+      if (y >= buttonY && y < buttonY + 44) {
+        if (x >= startX && x < startX + buttonWidth) {  // Cancel
+          forgetPromptSelection = 0;
+          state = WifiSelectionState::NETWORK_LIST;
+          updateRequired = true;
+          return true;
+        }
+        if (x >= startX + buttonWidth + buttonSpacing &&
+            x < startX + buttonWidth + buttonSpacing + buttonWidth) {  // Forget
+          forgetPromptSelection = 1;
+          xSemaphoreTake(renderingMutex, portMAX_DELAY);
+          WIFI_STORE.removeCredential(selectedSSID);
+          xSemaphoreGive(renderingMutex);
+          const auto network =
+              find_if(networks.begin(), networks.end(),
+                      [this](const WifiNetworkInfo& net) { return net.ssid == selectedSSID; });
+          if (network != networks.end()) {
+            network->hasSavedPassword = false;
+          }
+          state = WifiSelectionState::NETWORK_LIST;
+          updateRequired = true;
+          return true;
+        }
+      }
+      return true;
+    }
+    case WifiSelectionState::CONNECTION_FAILED: {
+      // Tap anywhere continues (same as Confirm/Back).
+      if (usedSavedPassword) {
+        state = WifiSelectionState::FORGET_PROMPT;
+        forgetPromptSelection = 0;
+      } else {
+        state = WifiSelectionState::NETWORK_LIST;
+      }
+      updateRequired = true;
+      return true;
+    }
+    default:
+      return true;  // SCANNING / CONNECTING / PASSWORD_ENTRY: inert.
+  }
+}
+
+bool WifiSelectionActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)dx;
+  (void)endX;
+  (void)endY;
+  if (state != WifiSelectionState::NETWORK_LIST || networks.empty()) {
+    return true;
+  }
+  const int listStartY = INX_THEME.drawerPageHeaderHeight();
+  const int visibleAreaHeight = renderer.getScreenHeight() - listStartY - 80;
+  const int maxVisibleNetworks = std::max(1, visibleAreaHeight / LIST_ITEM_HEIGHT);
+  const int maxScroll = std::max(0, static_cast<int>(networks.size()) - maxVisibleNetworks);
+  constexpr int kSwipeThreshold = 40;
+  if (dy <= -kSwipeThreshold) {
+    listScrollOffset_ = std::min(listScrollOffset_ + maxVisibleNetworks, maxScroll);  // swipe up = next page
+    updateRequired = true;
+  } else if (dy >= kSwipeThreshold) {
+    listScrollOffset_ = std::max(listScrollOffset_ - maxVisibleNetworks, 0);
+    updateRequired = true;
+  }
+  return true;
+}
+
 /**
  * @brief Main display task loop running on separate thread
  */
@@ -493,24 +642,18 @@ void WifiSelectionActivity::renderNetworkList(int screenWidth, int screenHeight,
   if (networks.empty()) {
     const int centerY = listStartY + (visibleAreaHeight / 2);
     renderer.text.centered(ATKINSON_HYPERLEGIBLE_10_FONT_ID, centerY - 20, "No networks found");
-    renderer.text.centered(ATKINSON_HYPERLEGIBLE_10_FONT_ID, centerY + 10, "Press Connect to scan again");
+    renderer.text.centered(ATKINSON_HYPERLEGIBLE_10_FONT_ID, centerY + 10, "Tap to scan again");
   } else {
     const int maxVisibleNetworks = visibleAreaHeight / LIST_ITEM_HEIGHT;
 
-    int scrollOffset = 0;
-    if (selectedNetworkIndex >= maxVisibleNetworks) {
-      scrollOffset = selectedNetworkIndex - maxVisibleNetworks + 1;
-    }
+    int scrollOffset = std::min(listScrollOffset_, std::max(0, static_cast<int>(networks.size()) - maxVisibleNetworks));
 
     int displayIndex = 0;
     for (size_t i = scrollOffset; i < networks.size() && displayIndex < maxVisibleNetworks; i++, displayIndex++) {
       const int itemY = listStartY + displayIndex * LIST_ITEM_HEIGHT;
       const auto& network = networks[i];
-      const bool isSelected = (static_cast<int>(i) == selectedNetworkIndex);
 
-      if (isSelected) {
-        renderer.rectangle.fill(0, itemY, screenWidth, LIST_ITEM_HEIGHT, static_cast<int>(GfxRenderer::FillTone::Ink));
-      }
+      // Touch-first: rows are always paper with ink text - tap a row to connect directly.
 
       std::string displayName = network.ssid;
       if (displayName.length() > 25) {
@@ -520,19 +663,19 @@ void WifiSelectionActivity::renderNetworkList(int screenWidth, int screenHeight,
       const int textX = 20;
       const int titleY = itemY + 20;
 
-      renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, textX, titleY, displayName.c_str(), !isSelected);
+      renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, textX, titleY, displayName.c_str(), true);
 
       if (network.isEncrypted) {
         int lockTextX = textX + renderer.text.getWidth(ATKINSON_HYPERLEGIBLE_10_FONT_ID, displayName.c_str()) + 10;
         if (lockTextX < screenWidth - 150) {
-          renderer.text.render(ATKINSON_HYPERLEGIBLE_8_FONT_ID, lockTextX, titleY + 2, "(Locked)", !isSelected);
+          renderer.text.render(ATKINSON_HYPERLEGIBLE_8_FONT_ID, lockTextX, titleY + 2, "(Locked)", true);
         }
       }
 
-      drawWifiIcon(screenWidth - 60, itemY + 15, network.rssi, isSelected);
+      drawWifiIcon(screenWidth - 60, itemY + 15, network.rssi, false);
 
       if (network.hasSavedPassword) {
-        renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, screenWidth - 80, itemY + 15, "+", !isSelected);
+        renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, screenWidth - 80, itemY + 15, "+", true);
       }
 
       if (i < networks.size() - 1) {
@@ -555,7 +698,7 @@ void WifiSelectionActivity::renderNetworkList(int screenWidth, int screenHeight,
     renderer.text.render(ATKINSON_HYPERLEGIBLE_8_FONT_ID, 20, screenHeight - 105, cachedMacAddress.c_str());
   }
 
-  const auto labels = mappedInput.mapLabels("« Back", "Connect", "", "");
+  const auto labels = mappedInput.mapLabels("\xC2\xAB Back", "Connect", "", "");
   renderer.ui.buttonHints(ATKINSON_HYPERLEGIBLE_10_FONT_ID, labels.btn1, labels.btn2, labels.btn3, labels.btn4);
 }
 

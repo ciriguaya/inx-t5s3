@@ -12,6 +12,7 @@ class TimeSyncActivity final : public ActivityWithSubactivity {
 
   void onEnter() override;
   void loop() override;
+  bool onTouchTap(int16_t x, int16_t y) override;
 
  private:
   enum class State { CONNECTING, SYNCING, DONE, FAILED };

@@ -200,6 +200,26 @@ void BackupRestoreActivity::loop() {
   }
 }
 
+bool BackupRestoreActivity::onTouchTap(int16_t x, int16_t y) {
+  (void)x;
+  if (state_ == State::Working) {
+    return true;
+  }
+  if (state_ == State::Done) {
+    state_ = State::Menu;
+    render();
+    return true;
+  }
+  const int bodyTop = INX_THEME.drawerPageHeaderHeight();
+  const int row = (y - bodyTop) / kRowH;
+  if (row == 0) {
+    startAction(Action::Backup);
+  } else if (row == 1) {
+    startAction(Action::Restore);
+  }
+  return true;
+}
+
 void BackupRestoreActivity::render() {
   renderer.clearScreen();
   const int bodyTop = INX_THEME.drawPageHeader(renderer, "Backup and restore");

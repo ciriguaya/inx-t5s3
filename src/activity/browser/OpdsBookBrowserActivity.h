@@ -41,6 +41,9 @@ class OpdsBookBrowserActivity final : public ActivityWithSubactivity {
   void onExit() override;
   /** Handles input for browsing the catalog and downloading books. */
   void loop() override;
+  /** Touch: tap a catalog row to open/download; swipe scrolls by a page. */
+  bool onTouchTap(int16_t x, int16_t y) override;
+  bool onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) override;
 
  private:
   TaskHandle_t displayTaskHandle = nullptr;

@@ -317,6 +317,20 @@ void XtcReaderActivity::loop() {
   }
 }
 
+bool XtcReaderActivity::onTouchTap(int16_t x, int16_t y) {
+  if (subActivity) {
+    return true;
+  }
+  // Edge thirds turn pages; the middle is left inert to avoid accidental exits.
+  const int w = renderer.getScreenWidth();
+  if (x < w / 3) {
+    turnPage(false, 1);
+  } else if (x > w * 2 / 3) {
+    turnPage(true, 1);
+  }
+  return true;
+}
+
 int XtcReaderActivity::chapterIndexForCurrentPage() const {
   if (!xtc || xtc->getPageCount() == 0) {
     return 0;

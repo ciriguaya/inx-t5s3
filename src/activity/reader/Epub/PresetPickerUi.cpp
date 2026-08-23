@@ -17,17 +17,17 @@
 #include "state/ReaderPreset.h"
 #include "system/Fonts.h"
 #include "system/MappedInputManager.h"
-#include "system/MenuNav.h"
 #include "system/UiTheme.h"
 
 namespace {
 constexpr int kVisibleRows = 6;
-}
+}  // namespace
 
 void PresetPickerUi::enter(EpubActivity& act) {
   mode_ = true;
   const int presetCount = std::max(1, READER_PRESETS.count());
-  selected_ = act.bookSettings.readerPresetIndex == BookSettings::kNoReaderPreset ? 0 : act.bookSettings.readerPresetIndex;
+  selected_ =
+      act.bookSettings.readerPresetIndex == BookSettings::kNoReaderPreset ? 0 : act.bookSettings.readerPresetIndex;
   selected_ = std::max(0, std::min(selected_, presetCount - 1));
   scroll_ = std::max(0, selected_ - kVisibleRows / 2);
   clampScroll();
@@ -36,7 +36,6 @@ void PresetPickerUi::enter(EpubActivity& act) {
 
 void PresetPickerUi::handleInput(EpubActivity& act) {
   const MappedInputManager& m = act.mappedInput;
-  const int presetCount = std::max(1, READER_PRESETS.count());
 
   if (m.wasReleased(MappedInputManager::Button::Back)) {
     mode_ = false;
@@ -45,6 +44,7 @@ void PresetPickerUi::handleInput(EpubActivity& act) {
   }
 
   if (m.wasReleased(MappedInputManager::Button::Confirm)) {
+    // Apply the currently-marked preset (touch users apply via handleTouchTap).
     mode_ = false;
     act.settingsDrawerSnapshot_ = act.bookSettings;
     act.hasSettingsDrawerSnapshot_ = true;
@@ -54,32 +54,68 @@ void PresetPickerUi::handleInput(EpubActivity& act) {
     act.startPageTimer();
     return;
   }
+}
 
-  if (m.wasPressed(MenuNav::itemPrev())) {
-    selected_ = (selected_ - 1 + presetCount) % presetCount;
-    if (selected_ < scroll_) {
-      scroll_ = selected_;
-    }
-    if (selected_ >= scroll_ + kVisibleRows) {
-      scroll_ = selected_ - kVisibleRows + 1;
-    }
-    clampScroll();
-    render(act);
-    return;
+bool PresetPickerUi::handleTouchTap(EpubActivity& act, const int16_t x, const int16_t y) {
+  if (!mode_) {
+    return false;
+  }
+  const int screenW = act.renderer.getScreenWidth();
+  const int screenH = act.renderer.getScreenHeight();
+  const int presetCount = std::max(1, READER_PRESETS.count());
+  const int rows = std::min(kVisibleRows, presetCount);
+  const int boxW = std::min(screenW - 60, 320);
+  constexpr int rowH = UiTheme::DRAWER_LIST_ITEM_HEIGHT - 4;
+  const int overlayHeaderH = INX_THEME.drawerHeaderHeight() - 4;
+  const int boxH = overlayHeaderH + rows * rowH;
+  const int boxX = (screenW - boxW) / 2;
+  const int boxY = (screenH - boxH) / 2;
+
+  if (x < boxX || x >= boxX + boxW || y < boxY + overlayHeaderH || y >= boxY + boxH) {
+    mode_ = false;  // Tap outside the list (header included) cancels, like the other popup selectors.
+    act.renderScreen(true);
+    return true;
   }
 
-  if (m.wasPressed(MenuNav::itemNext())) {
-    selected_ = (selected_ + 1) % presetCount;
-    if (selected_ < scroll_) {
-      scroll_ = selected_;
-    }
-    if (selected_ >= scroll_ + kVisibleRows) {
-      scroll_ = selected_ - kVisibleRows + 1;
-    }
-    clampScroll();
-    render(act);
-    return;
+  clampScroll();
+  const int row = (y - (boxY + overlayHeaderH)) / rowH;
+  const int presetIndex = scroll_ + row;
+  if (presetIndex < 0 || presetIndex >= presetCount) {
+    return true;
   }
+
+  // Tap a row = apply that preset immediately (same save/rebuild path as Confirm).
+  selected_ = presetIndex;
+  mode_ = false;
+  act.settingsDrawerSnapshot_ = act.bookSettings;
+  act.hasSettingsDrawerSnapshot_ = true;
+  READER_PRESETS.applyToBook(selected_, act.bookSettings);
+  act.saveBookSettings();
+  act.applyBookSettings();
+  act.startPageTimer();
+  return true;
+}
+
+bool PresetPickerUi::handleTouchSwipe(EpubActivity& act, const int16_t dx, const int16_t dy) {
+  (void)dx;
+  if (!mode_) {
+    return false;
+  }
+  const int presetCount = std::max(1, READER_PRESETS.count());
+  const int rows = std::min(kVisibleRows, presetCount);
+  const int maxScroll = std::max(0, presetCount - rows);
+  if (maxScroll == 0) {
+    return true;
+  }
+  constexpr int kSwipeThreshold = 40;
+  if (dy <= -kSwipeThreshold) {
+    scroll_ = std::min(scroll_ + rows, maxScroll);  // swipe up = next page
+    render(act);
+  } else if (dy >= kSwipeThreshold) {
+    scroll_ = std::max(scroll_ - rows, 0);  // swipe down = previous page
+    render(act);
+  }
+  return true;
 }
 
 void PresetPickerUi::clampScroll() {
@@ -110,23 +146,32 @@ void PresetPickerUi::render(EpubActivity& act) {
                        EpdFontFamily::BOLD);
 
   clampScroll();
+  // The applied preset is shown with a dot + bold name (informative "you are here", not a selection
+  // highlight - rows are always paper with ink text, tap to apply).
+  const int currentPreset = act.bookSettings.readerPresetIndex == BookSettings::kNoReaderPreset
+                                ? 0
+                                : act.bookSettings.readerPresetIndex;
   for (int i = 0; i < rows; ++i) {
     const int presetIndex = scroll_ + i;
     if (presetIndex >= presetCount) {
       break;
     }
     const int rowY = boxY + overlayHeaderH + i * rowH;
-    const bool sel = (presetIndex == selected_);
-    if (sel) {
-      renderer.rectangle.fill(boxX + 1, rowY, boxW - 2, rowH, static_cast<int>(GfxRenderer::FillTone::Ink));
+    const bool isCurrent = (presetIndex == currentPreset);
+    const int textY = rowY + (rowH - renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_10_FONT_ID)) / 2;
+
+    if (isCurrent) {
+      const int dotX = boxX + 15;
+      const int dotY = rowY + rowH / 2;
+      renderer.rectangle.fill(dotX - 3, dotY - 3, 6, 6, true, /*rounded=*/true);
     }
 
     const std::string name =
         renderer.text.truncate(ATKINSON_HYPERLEGIBLE_10_FONT_ID, READER_PRESETS.nameOf(presetIndex).c_str(), boxW - 40);
-    const int textY = rowY + (rowH - renderer.text.getLineHeight(ATKINSON_HYPERLEGIBLE_10_FONT_ID)) / 2;
-    renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, boxX + 20, textY, name.c_str(), sel ? 0 : 1);
+    renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, boxX + 24, textY, name.c_str(), true,
+                         isCurrent ? EpdFontFamily::BOLD : EpdFontFamily::REGULAR);
     if (i + 1 < rows) {
-      renderer.line.render(boxX, rowY + rowH, boxX + boxW, rowY + rowH, !sel, LineRender::Style::Dotted);
+      renderer.line.render(boxX, rowY + rowH, boxX + boxW, rowY + rowH, true, LineRender::Style::Dotted);
     }
   }
 

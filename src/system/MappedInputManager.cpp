@@ -5,6 +5,7 @@
 
 #include "system/MappedInputManager.h"
 
+#include <GfxRenderer.h>
 #include <utility>
 
 #include "state/ReaderSetting.h"
@@ -56,6 +57,70 @@ MappedInputManager::Button remapDirectional180(const MappedInputManager::Button 
       return button;
   }
 }
+
+MappedInputManager::TouchPoint orientTouchPoint(const uint16_t rawX, const uint16_t rawY, const GfxRenderer& renderer) {
+  MappedInputManager::TouchPoint point{};
+#ifndef SIMULATOR
+  switch (renderer.getOrientation()) {
+    case GfxRenderer::Orientation::Portrait:
+      point = {static_cast<int16_t>(rawX), static_cast<int16_t>(rawY)};
+      break;
+    case GfxRenderer::Orientation::LandscapeClockwise:
+      point = {static_cast<int16_t>(renderer.getScreenWidth() - 1 - rawY), static_cast<int16_t>(rawX)};
+      break;
+    case GfxRenderer::Orientation::PortraitInverted:
+      point = {static_cast<int16_t>(renderer.getScreenWidth() - 1 - rawX),
+               static_cast<int16_t>(renderer.getScreenHeight() - 1 - rawY)};
+      break;
+    case GfxRenderer::Orientation::LandscapeCounterClockwise:
+      point = {static_cast<int16_t>(rawY), static_cast<int16_t>(renderer.getScreenHeight() - 1 - rawX)};
+      break;
+  }
+
+  if (point.x < 0) point.x = 0;
+  if (point.y < 0) point.y = 0;
+  if (point.x >= renderer.getScreenWidth()) point.x = static_cast<int16_t>(renderer.getScreenWidth() - 1);
+  if (point.y >= renderer.getScreenHeight()) point.y = static_cast<int16_t>(renderer.getScreenHeight() - 1);
+#endif
+  return point;
+}
+
+#ifdef SIMULATOR
+/**
+ * Converts the simulator's panel-normalized touch coordinates back to logical
+ * (GfxRenderer) pixels. The crosspoint-simulator HalGPIO reports touches in
+ * physical panel space (see its logicalToPanelNormalized()); inverting that
+ * transform yields the same coordinates the on-device GT911 driver provides
+ * after orientTouchPoint().
+ */
+MappedInputManager::TouchPoint simPanelNormalizedToLogical(const float nx, const float ny,
+                                                           const GfxRenderer& renderer) {
+  const int lw = renderer.getScreenWidth();
+  const int lh = renderer.getScreenHeight();
+  int lx = 0;
+  int ly = 0;
+  switch (renderer.getOrientation()) {
+    case GfxRenderer::Orientation::Portrait:
+      lx = static_cast<int>((1.0f - ny) * (lw - 1));
+      ly = static_cast<int>(nx * (lh - 1));
+      break;
+    case GfxRenderer::Orientation::PortraitInverted:
+      lx = static_cast<int>(ny * (lw - 1));
+      ly = static_cast<int>((1.0f - nx) * (lh - 1));
+      break;
+    case GfxRenderer::Orientation::LandscapeClockwise:
+      lx = static_cast<int>((1.0f - nx) * (lw - 1));
+      ly = static_cast<int>((1.0f - ny) * (lh - 1));
+      break;
+    case GfxRenderer::Orientation::LandscapeCounterClockwise:
+    default:
+      lx = static_cast<int>(nx * (lw - 1));
+      ly = static_cast<int>(ny * (lh - 1));
+      break;
+  }
+  return {static_cast<int16_t>(lx), static_cast<int16_t>(ly)};
+}
+#endif
 }  // namespace
 
 bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint8_t) const) const {
@@ -90,15 +155,26 @@ bool MappedInputManager::mapButton(const Button button, bool (HalGPIO::*fn)(uint
   return false;
 }
 
-bool MappedInputManager::wasPressed(const Button button) const { return mapButton(button, &HalGPIO::wasPressed); }
+bool MappedInputManager::wasPressed(const Button button) const {
+  return mapButton(button, &HalGPIO::wasPressed) || (hasInjectedButtonTap_ && injectedButtonTap_ == button);
+}
 
-bool MappedInputManager::wasReleased(const Button button) const { return mapButton(button, &HalGPIO::wasReleased); }
+bool MappedInputManager::wasReleased(const Button button) const {
+  return mapButton(button, &HalGPIO::wasReleased) || (hasInjectedButtonTap_ && injectedButtonTap_ == button);
+}
 
-bool MappedInputManager::isPressed(const Button button) const { return mapButton(button, &HalGPIO::isPressed); }
+bool MappedInputManager::isPressed(const Button button) const {
+  if (hasInjectedButtonTap_ && injectedButtonTap_ == button) {
+    return false;
+  }
+  return mapButton(button, &HalGPIO::isPressed);
+}
 
-bool MappedInputManager::wasAnyPressed() const { return gpio.wasAnyPressed(); }
+bool MappedInputManager::wasAnyPressed() const { return gpio.wasAnyPressed() || hasInjectedButtonTap_; }
 
-bool MappedInputManager::wasAnyReleased() const { return gpio.wasAnyReleased(); }
+bool MappedInputManager::wasAnyReleased() const { return gpio.wasAnyReleased() || hasInjectedButtonTap_; }
+
+unsigned long MappedInputManager::getHeldTime() const { return hasInjectedButtonTap_ ? 0 : gpio.getHeldTime(); }
 
 MappedInputManager::MotionGesture MappedInputManager::readMotionGesture(const uint8_t orientation, const uint8_t mode,
                                                                         const uint8_t sensitivity) const {
@@ -116,8 +192,6 @@ MappedInputManager::MotionGesture MappedInputManager::readMotionGesture(const ui
   }
 #endif
 }
-
-unsigned long MappedInputManager::getHeldTime() const { return gpio.getHeldTime(); }
 
 bool MappedInputManager::rawHalIsPressed(const uint8_t halButtonIndex) const { return gpio.isPressed(halButtonIndex); }
 
@@ -187,4 +261,94 @@ MappedInputManager::Labels MappedInputManager::mapLabelsWithReaderNav(const char
   }
 
   return mapLabels(back, confirm, p, n);
+}
+
+bool MappedInputManager::wasTouchTapped(TouchPoint& point, const GfxRenderer& renderer) const {
+#ifdef SIMULATOR
+  float nx = 0.0f;
+  float ny = 0.0f;
+  if (!gpio.wasTouchTap(nx, ny)) {
+    return false;
+  }
+  point = simPanelNormalizedToLogical(nx, ny, renderer);
+  return true;
+#else
+  HalGPIO::TouchPoint raw;
+  if (!gpio.getTouchTap(raw)) {
+    return false;
+  }
+  point = orientTouchPoint(raw.x, raw.y, renderer);
+  return true;
+#endif
+}
+
+bool MappedInputManager::getTouchHold(TouchPoint& point, unsigned long& heldMs, const GfxRenderer& renderer) const {
+#ifdef SIMULATOR
+  float nx = 0.0f;
+  float ny = 0.0f;
+  if (!gpio.isTouchTapCandidate(nx, ny, heldMs)) {
+    return false;
+  }
+  point = simPanelNormalizedToLogical(nx, ny, renderer);
+  return true;
+#else
+  HalGPIO::TouchPoint raw;
+  if (!gpio.getTouchHold(raw, heldMs)) {
+    return false;
+  }
+  point = orientTouchPoint(raw.x, raw.y, renderer);
+  return true;
+#endif
+}
+
+bool MappedInputManager::getTouchPosition(TouchPoint& point, const GfxRenderer& renderer) const {
+#ifdef SIMULATOR
+  float nx = 0.0f;
+  float ny = 0.0f;
+  if (!gpio.isTouchHeldAt(nx, ny)) {
+    return false;
+  }
+  point = simPanelNormalizedToLogical(nx, ny, renderer);
+  return true;
+#else
+  HalGPIO::TouchPoint raw;
+  if (!gpio.getTouchPosition(raw)) {
+    return false;
+  }
+  point = orientTouchPoint(raw.x, raw.y, renderer);
+  return true;
+#endif
+}
+
+bool MappedInputManager::getTouchSwipe(TouchPoint& start, TouchPoint& end, const GfxRenderer& renderer) const {
+#ifdef SIMULATOR
+  float nxStart = 0.0f, nyStart = 0.0f, nxEnd = 0.0f, nyEnd = 0.0f;
+  if (!gpio.wasSwipe(nxStart, nyStart, nxEnd, nyEnd)) {
+    return false;
+  }
+  start = simPanelNormalizedToLogical(nxStart, nyStart, renderer);
+  end = simPanelNormalizedToLogical(nxEnd, nyEnd, renderer);
+  return true;
+#else
+  HalGPIO::TouchPoint rawStart, rawEnd;
+  if (!gpio.getTouchSwipe(rawStart, rawEnd)) {
+    return false;
+  }
+  start = orientTouchPoint(rawStart.x, rawStart.y, renderer);
+  end = orientTouchPoint(rawEnd.x, rawEnd.y, renderer);
+  return true;
+#endif
+}
+
+bool MappedInputManager::wasTouchHomeButtonPressed() const {
+#ifdef SIMULATOR
+  return gpio.wasHomeKeyTapped();
+#else
+  return gpio.wasTouchHomeButtonPressed();
+#endif
+}
+
+void MappedInputManager::injectButtonTap(const Button button) {
+  injectedButtonTap_ = button;
+  hasInjectedButtonTap_ = true;
 }

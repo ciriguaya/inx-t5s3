@@ -36,6 +36,7 @@
 #include "state/BookSetting.h"
 #include "state/BookState.h"
 #include "state/EpubNotesIndex.h"
+#include "state/PendingQuoteJump.h"
 #include "state/RecentBooks.h"
 #include "state/Session.h"
 #include "state/Statistics.h"
@@ -366,7 +367,55 @@ std::unique_ptr<Section> EpubActivity::loadSection(int spineIndex, const Viewpor
     return nullptr;
   }
 
+  // Re-materialize the T5S3 fork's saved highlights for this spine inside the current layout (cheap
+  // no-op for books without quotes or spines whose quotes already rendered).
+  ensureImportQuotesLoaded();
+  EpubAnnotations::importQuoteHighlights(epub->getCachePath(), spineIndex, loadedSection->pageCount, renderer,
+                                         info.fontId, FontManager::getNextFont(info.fontId), info.totalMarginLeft,
+                                         info.totalMarginTop, importQuotes_);
+
   return loadedSection;
+}
+
+void EpubActivity::ensureImportQuotesLoaded() {
+  if (importQuotesLoaded_) {
+    return;
+  }
+  importQuotesLoaded_ = true;
+  if (!epub) {
+    return;
+  }
+  auto normalize = [](std::string s) {
+    for (char& c : s) {
+      c = static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return s;
+  };
+  // Match candidates: OPF title, the book file's name stem, and that stem with a trailing "(N)"
+  // disambiguator stripped ("Popol Vuh(1)" -> "Popol Vuh"). The old fork highlights carry the title
+  // as the fork parsed it, which can differ in case or include/exclude the suffix.
+  std::vector<std::string> titleCandidates = HighlightPersistence::bookTitleCandidates(epub->getTitle(),
+                                                                                      epub->getPath());
+  std::vector<std::string> normCandidates;
+  for (const std::string& c : titleCandidates) {
+    normCandidates.push_back(normalize(c));
+  }
+  const std::string pathKey = normalize(epub->getPath());
+  std::vector<HighlightEntry> all = HighlightPersistence::loadAllHighlights();
+  for (const HighlightEntry& e : all) {
+    const std::string qTitle = normalize(HighlightPersistence::sanitizeFilename(e.bookTitle));
+    bool titleMatch = std::find(normCandidates.begin(), normCandidates.end(), qTitle) != normCandidates.end();
+    const bool pathMatch = normalize(e.bookPath) == pathKey;
+    if (titleMatch || pathMatch) {
+      importQuotes_.push_back(e);
+    }
+  }
+  if (!importQuotes_.empty()) {
+    Serial.printf("[EPA] Importing %d stored quotes for this book\n", static_cast<int>(importQuotes_.size()));
+  }
+  // Record the book path in the quote stores so the Quotes browser can later resolve where each
+  // quote lives (the fork's *_pages.json masters carry no path). Cheap no-op once patched.
+  HighlightPersistence::ensureQuoteBookPaths(titleCandidates, epub->getPath());
 }
 
 /**
@@ -456,6 +505,11 @@ void EpubActivity::loadProgress() {
  */
 void EpubActivity::saveProgress(int spineIndex, int currentPage, int pageCount, const bool saveRecentNow) {
   if (!bookProgress || !epub) {
+    return;
+  }
+  // A quote jump is a peek at the quote's page, not the reading position: keep the last real
+  // progress for the whole session - progress is only persisted when the book is opened directly.
+  if (skipProgressSave_) {
     return;
   }
 
@@ -622,19 +676,25 @@ bool EpubActivity::slowPath() {
   }
 
   const bool coverAvailable = displayCoverOrTitle();
+  // The whole book-open sequence runs in the main loop; yield between the heavy
+  // steps so the IDLE task (and its watchdog) keeps running.
+  yield();
   loadingProgress = 30;
   drawLoadingScreen();
   vTaskDelay(pdMS_TO_TICKS(50));
 
   ensureThumbnailExists(coverAvailable);
+  yield();
   const int initialSpine = epub->getSpineIndexForInitialOpen();
   currentSpineIndex = (initialSpine == 0 && epub->getSpineItemsCount() > 1) ? 1 : initialSpine;
   nextPageNumber = 0;
 
   FontManager::ensureReaderLayoutFonts(calculateViewport().fontId, renderer);
+  yield();
   BOOK_STATE.addOrUpdateBook(epub->getPath(), epub->getTitle(), epub->getAuthor());
 
   loadCurrentSection(false);
+  yield();
   loadingProgress = 100;
   drawLoadingScreen();
 
@@ -684,6 +744,37 @@ void EpubActivity::onEnter() {
   loadBookmarks();
   initStats();
 
+  // A quote opened from the Quotes browser targets this book: land on its exact spine/page.
+  {
+    int jumpSpine = -1;
+    int jumpPage = 0;
+    const bool hadJump = pendingQuoteJump.active && pendingQuoteJump.path == epub->getPath();
+    const bool jumpExact = pendingQuoteJump.exact;
+    const std::string jumpText = pendingQuoteJump.text;
+    if (pendingQuoteJump.consumeIfPathMatches(epub->getPath(), jumpSpine, jumpPage) && epub && section) {
+      currentSpineIndex = jumpSpine;
+      nextPageNumber = jumpPage;
+      section.reset();
+      loadCurrentSection();
+      // Do not let the jump page become the persisted reading position (see saveProgress).
+      skipProgressSave_ = true;
+    }
+    if (hadJump && !jumpExact && !jumpText.empty() && section && epub) {
+      // Fallback jump (chapter start only): the section is freshly built, so search its cached pages
+      // for the quote phrase and land on the exact page.
+      const ViewportInfo info = calculateViewport();
+      const int bodyFontId = bookSettings.getReaderFontId();
+      const int headerFontId = FontManager::getNextFont(bodyFontId);
+      const int exactPage = EpubAnnotations::findPageWithText(
+          epub->getCachePath(), currentSpineIndex, section->pageCount, renderer, bodyFontId, headerFontId,
+          info.totalMarginLeft, info.totalMarginTop, jumpText);
+      if (exactPage >= 0 && exactPage < section->pageCount) {
+        section->currentPage = exactPage;
+        nextPageNumber = exactPage;
+      }
+    }
+  }
+
   updateRequired = true;
   lastAutoPageTurnTime = millis();
   bookLayoutAppliedOrientation_ = bookSettings.orientation;
@@ -697,6 +788,135 @@ void EpubActivity::onEnter() {
 }
 
 bool EpubActivity::preventAutoSleep() { return gpio.deviceIsX3() && SETTINGS.shakePageTurn != 0; }
+
+bool EpubActivity::onTouchTap(int16_t x, int16_t y) {
+  // The preset picker hit-tests its own rows (tap a row = apply that preset).
+  if (presetPicker_.isActive()) {
+    presetPicker_.handleTouchTap(*this, x, y);
+    return true;
+  }
+  // Overlays/drawers own the screen: a tap selects the highlighted drawer row.
+  if (subActivity || dictUi_.isActive() || orientationPicker_.isActive() || quickActionsUi_.isActive()) {
+    mappedInput.injectButtonTap(MappedInputManager::Button::Confirm);
+    return true;
+  }
+  if (annUi_.isActive()) {
+    annUi_.handleTouchTap(*this, x, y);
+    return true;
+  }
+  if (menuDrawerVisible && menuDrawer) {
+    menuDrawer->handleTouchTap(x, y);
+    return true;
+  }
+  if (settingsDrawerVisible && settingsDrawer) {
+    if (!settingsDrawer->handleTouchTap(x, y)) {
+      mappedInput.injectButtonTap(MappedInputManager::Button::Confirm);
+    }
+    return true;
+  }
+  if (isToggleClosed || !section || !epub) {
+    return true;
+  }
+
+  // Reading body: left/right thirds turn pages (respecting the configured
+  // Left/Right button actions), the middle third toggles the menu drawer.
+  const int w = renderer.getScreenWidth();
+  if (x < w / 3) {
+    pauseReadingStats();
+    btnBindings_.dispatch(*this, READER_SETTINGS.btnLeftShortAction);
+    return true;
+  }
+  if (x > w * 2 / 3) {
+    pauseReadingStats();
+    btnBindings_.dispatch(*this, READER_SETTINGS.btnRightShortAction);
+    return true;
+  }
+  pauseReadingStats();
+  toggleMenuDrawer();
+  return true;
+}
+
+bool EpubActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  if (presetPicker_.isActive()) {
+    presetPicker_.handleTouchSwipe(*this, dx, dy);
+    return true;
+  }
+  if (subActivity || dictUi_.isActive() || orientationPicker_.isActive() || quickActionsUi_.isActive()) {
+    return true;
+  }
+  if (annUi_.isActive()) {
+    if (annUi_.isDeletePopupActive()) {
+      return true;  // Delete popup is modal: swipes are ignored until it is dismissed.
+    }
+    // Drag extends the active selection; releasing commits and saves it.
+    annUi_.handleTouchDrag(*this, endX, endY);
+    annUi_.saveToStorage(*this);
+    annUi_.exit(*this);
+    startPageTimer();
+    return true;
+  }
+  if (menuDrawerVisible && menuDrawer) {
+    menuDrawer->handleTouchSwipe(dx, dy);
+    return true;
+  }
+  if (settingsDrawerVisible && settingsDrawer) {
+    settingsDrawer->handleTouchSwipe(dx, dy);
+    return true;
+  }
+  if (isToggleClosed || !section || !epub) {
+    return true;
+  }
+
+  // Reading body: horizontal swipes turn pages (forward on left->right drag,
+  // backward on right->left drag, matching the default page-turn direction).
+  constexpr int kSwipeThreshold = 40;
+
+  // Touch-first: a swipe up starting from the bottom screen edge opens the book menu
+  // (chapters, presets, bookmarks...) - the same action as a PWR-button short press.
+  const int screenH = renderer.getScreenHeight();
+  const int swipeStartY = endY - dy;
+  if (dy <= -kSwipeThreshold && swipeStartY >= screenH - 110) {
+    pauseReadingStats();
+    toggleMenuDrawer();
+    return true;
+  }
+
+  if (dx <= -kSwipeThreshold) {
+    endPageTimer();
+    pageTurn(true);
+    lastAutoPageTurnTime = millis();
+    return true;
+  }
+  if (dx >= kSwipeThreshold) {
+    endPageTimer();
+    pageTurn(false);
+    lastAutoPageTurnTime = millis();
+    return true;
+  }
+  return true;
+}
+
+bool EpubActivity::onTouchHold(int16_t x, int16_t y, unsigned long heldMs) {
+  (void)heldMs;
+  if (subActivity || menuDrawerVisible || settingsDrawerVisible || isToggleClosed || !section || !epub) {
+    return true;
+  }
+  if (dictUi_.isActive() || orientationPicker_.isActive() || presetPicker_.isActive() || quickActionsUi_.isActive()) {
+    return true;
+  }
+  if (!annUi_.isActive()) {
+    // Long-press on an existing highlight opens a delete popup; otherwise the touch
+    // starts a new selection in highlight mode.
+    if (annUi_.tryOpenHighlightDeleteAt(*this, x, y)) {
+      return true;
+    }
+    annUi_.enterAtTouch(*this, x, y);
+    if (annUi_.isActive()) {
+      updateRequired = true;
+    }
+  }
+  return true;
+}
 
 /**
  * @brief Called when exiting the activity
@@ -720,7 +940,7 @@ void EpubActivity::onExit() {
   if (epub) {
     saveBookStats();
 
-    if (section) {
+    if (section && !skipProgressSave_) {
       float spineProgress = static_cast<float>(section->currentPage) / static_cast<float>(section->pageCount);
       float bookProgressValue = epub->calculateProgress(currentSpineIndex, spineProgress);
       RECENT_BOOKS.addBook(epub->getPath(), epub->getCachePath(), epub->getTitle(), epub->getAuthor(),
@@ -761,6 +981,13 @@ void EpubActivity::loop() {
   }
 
   if (annUi_.isActive()) {
+    // Live drag tracking (old T5S3-reader behavior): while the finger is down, extend the selection
+    // word-by-word as it crosses words, instead of only seeing the release point. handleTouchDrag()
+    // repaints only when the focus word actually changes.
+    MappedInputManager::TouchPoint dragPt{};
+    if (annUi_.isSelecting() && mappedInput.getTouchPosition(dragPt, renderer)) {
+      annUi_.handleTouchDrag(*this, dragPt.x, dragPt.y);
+    }
     annUi_.handleInput(*this);
     if (updateRequired && annUi_.isActive()) {
       updateRequired = false;
@@ -871,9 +1098,12 @@ void EpubActivity::loop() {
 
   // Power (short-press only, no long-press pairing) shares the same 12-option READER_BUTTON_ACTION
   // dispatch as Up/Down/Left/Right - see READER_SETTINGS.btnPowerShortAction's doc comment for why this
-  // supersedes the old 4-option readerShortPwrBtn.
+  // supersedes the old 4-option readerShortPwrBtn. Holds at or beyond READER_POWER_LONG_PRESS_MS are
+  // handled by main.cpp (power off) and never reach this release dispatch.
   if (mappedInput.wasReleased(MappedInputManager::Button::Power)) {
-    btnBindings_.dispatch(*this, READER_SETTINGS.btnPowerShortAction);
+    if (mappedInput.getHeldTime() < SystemSetting::READER_POWER_LONG_PRESS_MS) {
+      btnBindings_.dispatch(*this, READER_SETTINGS.btnPowerShortAction);
+    }
     return;
   }
 
@@ -1549,6 +1779,10 @@ void EpubActivity::pageTurn(bool forward) {
     updateRequired = true;
     return;
   }
+
+  // The reader is navigating on its own - but if this session started from a quote jump, the saved
+  // reading position stays untouched: progress is only ever persisted when the book is opened directly
+  // (a quote visit is a peek, not reading). skipProgressSave_ stays set for the whole session.
 
   if (section->pageCount == 0) {
     section.reset();

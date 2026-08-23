@@ -363,7 +363,7 @@ void ReaderPresetsActivity::render() {
       renderer.rectangle.fill(
           0, itemY, screenW, kListItemHeight,
           isSelected ? static_cast<int>(GfxRenderer::FillTone::Ink) : static_cast<int>(GfxRenderer::FillTone::Paper));
-      renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, 20, textY, "XTC", isSelected ? 0 : 1);
+      renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, 20, textY, "T5S3", isSelected ? 0 : 1);
       const char* tag = xtcExpanded_ ? "-" : "+";
       const int tagW = renderer.text.getWidth(ATKINSON_HYPERLEGIBLE_10_FONT_ID, tag);
       renderer.text.render(ATKINSON_HYPERLEGIBLE_10_FONT_ID, screenW - kRowValueRightInset - tagW, textY, tag,
@@ -918,4 +918,181 @@ void ReaderPresetsActivity::loop() {
   } else {
     handleListInput();
   }
+}
+
+bool ReaderPresetsActivity::onTouchTap(int16_t x, int16_t y) {
+  if (subActivity) {
+    return true;
+  }
+
+  // Generic popup selector (multi-option rows): tap an option to commit, tap outside to cancel.
+  if (actionSelectorOpen_) {
+    const int screenW = renderer.getScreenWidth();
+    const int screenH = renderer.getScreenHeight();
+    constexpr int visibleRows = 6;
+    const int optionCount = static_cast<int>(selectorOptions_.size());
+    const int rows = std::min(visibleRows, optionCount);
+    if (rows > 0) {
+      constexpr int rowH = UiTheme::DRAWER_LIST_ITEM_HEIGHT - 4;
+      const int overlayHeaderH = INX_THEME.drawerHeaderHeight() - 4;
+      const int boxW = std::min(screenW - 60, 320);
+      const int boxH = overlayHeaderH + rows * rowH;
+      const int boxX = (screenW - boxW) / 2;
+      const int boxY = (screenH - boxH) / 2;
+      if (x >= boxX && x < boxX + boxW && y >= boxY + overlayHeaderH && y < boxY + boxH) {
+        const int optionIdx = actionSelectorScroll_ + (y - boxY - overlayHeaderH) / rowH;
+        if (optionIdx >= 0 && optionIdx < optionCount) {
+          actionSelectorSel_ = optionIdx;
+          if (selectorOnCommit_) {
+            selectorOnCommit_(optionIdx);
+          }
+          actionSelectorOpen_ = false;
+          render();
+          return true;
+        }
+      }
+    }
+    actionSelectorOpen_ = false;  // tap outside cancels
+    render();
+    return true;
+  }
+
+  // Preset action overlay (Edit / Rename / Delete / Cancel).
+  if (overlayOpen_) {
+    const int screenW = renderer.getScreenWidth();
+    const int screenH = renderer.getScreenHeight();
+    const int optionCount = overlayOptionCountFor(overlayPresetIndex_);
+    constexpr int rowH = UiTheme::DRAWER_LIST_ITEM_HEIGHT - 4;
+    const int overlayHeaderH = INX_THEME.drawerHeaderHeight() - 4;
+    const int boxW = std::min(screenW - 60, 320);
+    const int boxH = overlayHeaderH + optionCount * rowH;
+    const int boxX = (screenW - boxW) / 2;
+    const int boxY = (screenH - boxH) / 2;
+    if (x >= boxX && x < boxX + boxW && y >= boxY + overlayHeaderH && y < boxY + boxH) {
+      const int optionIdx = (y - boxY - overlayHeaderH) / rowH;
+      if (optionIdx >= 0 && optionIdx < optionCount) {
+        overlaySel_ = optionIdx;
+        const char* choice = overlayOptionFor(overlayPresetIndex_, overlaySel_);
+        const int presetIndex = overlayPresetIndex_;
+        overlayOpen_ = false;
+        if (strcmp(choice, "Edit") == 0) {
+          openEditor(presetIndex);
+        } else if (strcmp(choice, "Rename") == 0) {
+          openRenameKeyboard(presetIndex);
+        } else if (strcmp(choice, "Delete") == 0) {
+          READER_PRESETS.remove(presetIndex);
+          const int rows = rowCount();
+          if (selectedRow_ >= rows) selectedRow_ = std::max(0, rows - 1);
+          render();
+        } else {  // Cancel
+          render();
+        }
+        return true;
+      }
+    }
+    overlayOpen_ = false;
+    render();
+    return true;
+  }
+
+  if (handleTabBarTouchTap(renderer, x, y)) {
+    return true;
+  }
+
+  // List body: tap the row under the finger, then activate it (toggle / open selector / open editor).
+  const int rows = rowCount();
+  if (rows == 0) {
+    return true;
+  }
+  const int listTop = mainHeaderDividerY();
+  const int visibleIndex = (y - listTop) / kListItemHeight;
+  const int rowIndex = visibleIndex + scrollOffset_;
+  if (rowIndex >= 0 && rowIndex < rows) {
+    selectedRow_ = rowIndex;
+    const int maxScroll = std::max(0, rows - itemsPerPage_);
+    if (selectedRow_ < scrollOffset_) scrollOffset_ = selectedRow_;
+    if (selectedRow_ >= scrollOffset_ + itemsPerPage_) {
+      scrollOffset_ = std::min(selectedRow_ - itemsPerPage_ + 1, maxScroll);
+    }
+    scrollOffset_ = std::max(0, std::min(scrollOffset_, maxScroll));
+    activateSelectedRow();
+    return true;
+  }
+  return true;
+}
+
+bool ReaderPresetsActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)endX;
+  (void)endY;
+  if (subActivity) {
+    return true;
+  }
+
+  constexpr int kSwipeThreshold = 40;
+  if (actionSelectorOpen_) {
+    const int optionCount = static_cast<int>(selectorOptions_.size());
+    if (optionCount > 0) {
+      constexpr int visibleRows = 6;
+      if (dy <= -kSwipeThreshold) {
+        actionSelectorSel_ = (actionSelectorSel_ + 1) % optionCount;
+      } else if (dy >= kSwipeThreshold) {
+        actionSelectorSel_ = (actionSelectorSel_ - 1 + optionCount) % optionCount;
+      } else {
+        return true;
+      }
+      if (actionSelectorSel_ < actionSelectorScroll_) actionSelectorScroll_ = actionSelectorSel_;
+      if (actionSelectorSel_ >= actionSelectorScroll_ + visibleRows) {
+        actionSelectorScroll_ = actionSelectorSel_ - visibleRows + 1;
+      }
+      renderActionSelectorOverlay();
+    }
+    return true;
+  }
+  if (overlayOpen_) {
+    const int n = overlayOptionCountFor(overlayPresetIndex_);
+    if (dy <= -kSwipeThreshold) {
+      overlaySel_ = (overlaySel_ + 1) % n;
+      renderOverlay();
+    } else if (dy >= kSwipeThreshold) {
+      overlaySel_ = (overlaySel_ - 1 + n) % n;
+      renderOverlay();
+    }
+    return true;
+  }
+
+  // Horizontal swipes switch tabs (Settings is this screen).
+  if (dx <= -kSwipeThreshold) {
+    tabSelectorIndex = (tabSelectorIndex + 1) % TAB_COUNT;
+    if (tabSelectorIndex == 2) {
+      render();
+    } else {
+      navigateToSelectedMenu();
+    }
+    return true;
+  }
+  if (dx >= kSwipeThreshold) {
+    tabSelectorIndex = (tabSelectorIndex - 1 + TAB_COUNT) % TAB_COUNT;
+    if (tabSelectorIndex == 2) {
+      render();
+    } else {
+      navigateToSelectedMenu();
+    }
+    return true;
+  }
+
+  const int rows = rowCount();
+  if (rows > 0) {
+    if (dy <= -kSwipeThreshold) {
+      selectedRow_ = (selectedRow_ + 1) % rows;
+    } else if (dy >= kSwipeThreshold) {
+      selectedRow_ = (selectedRow_ - 1 + rows) % rows;
+    } else {
+      return true;
+    }
+    if (selectedRow_ < scrollOffset_) scrollOffset_ = selectedRow_;
+    if (selectedRow_ >= scrollOffset_ + itemsPerPage_) scrollOffset_ = selectedRow_ - itemsPerPage_ + 1;
+    scrollOffset_ = std::max(0, std::min(scrollOffset_, std::max(0, rows - itemsPerPage_)));
+    render();
+  }
+  return true;
 }

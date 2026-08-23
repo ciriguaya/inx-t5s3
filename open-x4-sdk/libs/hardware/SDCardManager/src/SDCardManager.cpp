@@ -5,12 +5,14 @@
 
 #include "SDCardManager.h"
 
+#include <BoardT5S3.h>
+
 #include <cctype>
 #include <cstring>
 #include <string>
 
 namespace {
-constexpr uint8_t SD_CS = 12;
+constexpr uint8_t SD_CS = T5S3_SD_CS;
 constexpr uint32_t SPI_FQ = 40000000;
 
 std::string normaliseLookupName(const char* name) {
@@ -79,6 +81,7 @@ SDCardManager SDCardManager::instance;
 SDCardManager::SDCardManager() : sd() {}
 
 bool SDCardManager::begin() {
+  BoardT5S3::prepareSdBus();
   if (!sd.begin(SD_CS, SPI_FQ)) {
     if (Serial) Serial.printf("[%lu] [SD] SD card not detected\n", millis());
     initialized = false;
@@ -154,7 +157,10 @@ String SDCardManager::readFile(const char* path) {
   }
 
   String content = "";
-  constexpr size_t maxSize = 50000;
+  // T5S3: quote/highlight files routinely exceed the old 50 KB cap (a heavily annotated book can reach
+  // 100 KB+). Truncating at 50 KB silently dropped the newest quotes on save (read-modify-write) and
+  // broke loading them back. Bound it generously instead.
+  constexpr size_t maxSize = 300000;
   size_t readSize = 0;
   while (f.available() && readSize < maxSize) {
     const char c = static_cast<char>(f.read());

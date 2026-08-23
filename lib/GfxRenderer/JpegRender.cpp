@@ -318,24 +318,27 @@ void drawPixelForLevel(const GfxRenderer& renderer, const int x, const int y, co
       (renderer.deviceIsX3() ? kX3GrayscaleCodeForLevel[level & 3] : kGrayscaleCodeForLevel[level & 3]);
   if (renderMode == GfxRenderer::BW) {
     if (level > 0) {
-      renderer.drawPixel(x, y, true);
+      renderer.drawPixelRaw(x, y, true);  // image pixels: never night-mode inverted
     }
   } else if (renderMode == GfxRenderer::GRAYSCALE_MSB && ((grayscaleCode & 0b10) != 0)) {
-    renderer.drawPixel(x, y, false);
+    renderer.drawPixelRaw(x, y, false);
   } else if (renderMode == GfxRenderer::GRAYSCALE_LSB && ((grayscaleCode & 0b01) != 0)) {
-    renderer.drawPixel(x, y, false);
+    renderer.drawPixelRaw(x, y, false);
   } else if (renderMode == GfxRenderer::GRAY2_LSB && ((mapQualityGray2Level(level) & 0b01) == 0)) {
-    renderer.drawPixel(x, y, true);
+    renderer.drawPixelRaw(x, y, true);
   } else if (renderMode == GfxRenderer::GRAY2_MSB && ((mapQualityGray2Level(level) & 0b10) == 0)) {
-    renderer.drawPixel(x, y, true);
+    renderer.drawPixelRaw(x, y, true);
   }
 }
 
 void drawQuantizedPixel(const GfxRenderer& renderer, const int x, const int y, const int q,
                         const ImageRenderMode mode) {
+  const GfxRenderer::RenderMode renderMode = renderer.getRenderMode();
   if (mode == ImageRenderMode::OneBit) {
     if (q == 0) {
-      renderer.drawPixel(x, y, true);
+      if (renderMode == GfxRenderer::BW) {
+        renderer.drawPixelRaw(x, y, true);
+      }
     }
     return;
   }
@@ -524,7 +527,7 @@ bool JpegRender::render(FsFile& jpegFile, int x, int y, int targetWidth, int tar
         }
         drawPixelForLevel(renderer_, drawOffsetX + ox, screenY, level);
       } else if (q == 0) {
-        renderer_.drawPixel(drawOffsetX + ox, screenY, true);
+        renderer_.drawPixelRaw(drawOffsetX + ox, screenY, true);
       }
     }
     if (mode == ImageRenderMode::TwoBit) {
@@ -537,6 +540,10 @@ bool JpegRender::render(FsFile& jpegFile, int x, int y, int targetWidth, int tar
   uint32_t mcuDecodeMs = 0;
   uint32_t rowProcessMs = 0;
   for (int mcuY = 0; mcuY < imageInfo.m_MCUSPerCol; mcuY++) {
+    // Keep the IDLE task (and its watchdog) alive during large image decodes.
+    if ((mcuY & 0x0F) == 0) {
+      yield();
+    }
     const uint32_t tMcuStart = millis();
     for (int mcuX = 0; mcuX < imageInfo.m_MCUSPerRow; mcuX++) {
       if (pjpeg_decode_mcu() != 0) break;

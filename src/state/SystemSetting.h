@@ -91,6 +91,11 @@ class SystemSetting {
     DISABLE_NAVIGATION_MODE_COUNT
   };
 
+  /** While reading (EPUB), a power-button hold of this duration powers the device off; shorter
+   *  presses dispatch the configured reader short-press action (default: open the book menu). The
+   *  boot button stays the on/off button everywhere else (10ms press threshold in SLEEP mode). */
+  static constexpr unsigned long READER_POWER_LONG_PRESS_MS = 2000;
+
   /**
    * @brief Status bar item types for configurable sections
    */
@@ -311,6 +316,9 @@ class SystemSetting {
     BTN_ACTION_CHANGE_ORIENTATION,
     BTN_ACTION_APPLY_PRESET,
     BTN_ACTION_QUICK_ACTIONS,
+    /** T5S3: opens the in-book menu drawer (chapters, presets, bookmarks...) - the default short-press
+     *  action for the power/boot button while reading (the user's requested "PWR = book menu"). */
+    BTN_ACTION_OPEN_MENU,
     READER_BUTTON_ACTION_COUNT
   };
 
@@ -401,13 +409,20 @@ class SystemSetting {
   /** X3 only: show the ambient clock (ScreenComponents::drawMenuClock) in the tab-bar chrome. */
   uint8_t showMenuClock = 1;
 
-  uint8_t shortPwrBtn = PAGE_REFRESH;  ///< Short power button behavior
+  /** Night mode: invert black/white UI rendering (text, shapes, icons). Images are not inverted. */
+  uint8_t nightMode = 0;
+  /** Backlight brightness 0-10 (0 = off). Applies immediately via BoardT5S3::setBacklightLevel. */
+  uint8_t backlightLevel = 0;
+
+  // T5S3 touch-first default: a single power-button press powers the device off.
+  uint8_t shortPwrBtn = SLEEP;  ///< Short power button behavior
 
   uint8_t frontButtonLayout = BACK_CONFIRM_LEFT_RIGHT;  ///< Front button layout
   uint8_t sideButtonLayout = PREV_NEXT;                 ///< Side button layout
 
   uint8_t mainMenuNav = MAIN_MENU_NAV_FRONT;  ///< Main-menu tab vs item navigation buttons
-  uint8_t uiTheme = UI_THEME_CLASSIC;         ///< UI chrome theme
+  // T5S3 touch-first default: bottom tab bar for thumb reach on the 540x960 panel.
+  uint8_t uiTheme = UI_THEME_BOTTOM_TABS;      ///< UI chrome theme
 
   uint8_t sleepTimeout = SLEEP_10_MIN;  ///< Sleep timeout
 

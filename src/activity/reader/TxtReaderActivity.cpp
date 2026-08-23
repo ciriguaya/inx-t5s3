@@ -142,6 +142,26 @@ void TxtReaderActivity::loop() {
   }
 }
 
+bool TxtReaderActivity::onTouchTap(int16_t x, int16_t y) {
+  if (subActivity) {
+    return true;
+  }
+  // Edge thirds turn pages; the middle is left inert to avoid accidental exits.
+  const int w = renderer.getScreenWidth();
+  if (x < w / 3) {
+    if (currentPage > 0) {
+      currentPage--;
+      updateRequired = true;
+    }
+  } else if (x > w * 2 / 3) {
+    if (currentPage < totalPages - 1) {
+      currentPage++;
+      updateRequired = true;
+    }
+  }
+  return true;
+}
+
 void TxtReaderActivity::displayTaskLoop() {
   while (true) {
     if (updateRequired) {

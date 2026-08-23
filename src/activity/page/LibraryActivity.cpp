@@ -321,13 +321,16 @@ LibraryActivity::LibraryActivity(GfxRenderer& renderer, MappedInputManager& mapp
                                  const std::function<void()>& onGoToRecent,
                                  const std::function<void(const std::string& path)>& onSelectBook,
                                  const std::function<void()>& onRecentOpen, const std::function<void()>& onSettingsOpen,
-                                 const std::string& initialPath)
+                                 const std::function<void()>& onSyncOpen,
+                                 const std::function<void()>& onStatisticsOpen, const std::string& initialPath)
     : Activity("Library", renderer, mappedInput),
       Menu(),
       onGoToRecent(onGoToRecent),
       onSelectBook(onSelectBook),
       onRecentOpen(onRecentOpen),
       onSettingsOpen(onSettingsOpen),
+      onSyncOpen(onSyncOpen),
+      onStatisticsOpen(onStatisticsOpen),
       savedFolderPath(""),
       basepath(initialPath),
       selectedTagKey_(""),
@@ -2050,6 +2053,125 @@ void LibraryActivity::loop() {
     handleConfirmAction(itemCount);
     return;
   }
+}
+
+int LibraryActivity::libraryItemIndexForTouch(int x, int y) const {
+  const int itemCount = static_cast<int>(currentPageItems.size());
+  if (itemCount == 0 || tabSelectorIndex != 1) {
+    return -1;
+  }
+
+  const int headerY = mainContentTop();
+  const int headerHeight = mainHeaderHeight();
+  const int gridStartY = headerY + headerHeight + librarySubheadingHeight() - 3;
+  if (y < gridStartY) {
+    return -1;  // Header/subheading area.
+  }
+
+  const int screenW = renderer.getScreenWidth();
+
+  if (isLibraryGridMode()) {
+    const int screenH = INX_THEME.mainTabsAtBottom() ? mainContentBottom(renderer) + 8 : renderer.getScreenHeight() - 30;
+    const int availW = std::max(1, screenW - LIB_GRID_OUTER_PAD * 2);
+    const int availH = std::max(1, screenH - gridStartY - LIB_GRID_OUTER_PAD * 2);
+    const int frameW = std::min(GRID_ICON_SIZE, (availW - (LIB_GRID_COLS - 1) * LIB_GRID_GAP_X) / LIB_GRID_COLS);
+    const int maxFrameH = (availH - (LIB_GRID_ROWS - 1) * LIB_GRID_MIN_GAP_Y) / LIB_GRID_ROWS;
+    const int frameH = std::max(96, std::min(GRID_ICON_SIZE, maxFrameH));
+    const int remainingH = availH - LIB_GRID_ROWS * frameH;
+    const int gapY = (LIB_GRID_ROWS > 1) ? std::max(LIB_GRID_MIN_GAP_Y, remainingH / (LIB_GRID_ROWS - 1)) : 0;
+    const int blockH = LIB_GRID_ROWS * frameH + (LIB_GRID_ROWS - 1) * gapY;
+    const int blockTop = gridStartY + LIB_GRID_OUTER_PAD + std::max(0, (availH - blockH) / 2);
+    const int remainingW = availW - LIB_GRID_COLS * frameW;
+    const int gapX = (LIB_GRID_COLS > 1) ? std::max(LIB_GRID_GAP_X, remainingW / (LIB_GRID_COLS - 1)) : 0;
+    const int blockW = LIB_GRID_COLS * frameW + (LIB_GRID_COLS - 1) * gapX;
+    const int row0X = LIB_GRID_OUTER_PAD + std::max(0, (availW - blockW) / 2);
+    const int col = (x - row0X) / (frameW + gapX);
+    const int row = (y - blockTop) / (frameH + gapY);
+    if (col < 0 || col >= LIB_GRID_COLS || row < 0) {
+      return -1;
+    }
+    const int idx = row * LIB_GRID_COLS + col;
+    return (idx < itemCount) ? idx : -1;
+  }
+
+  if (currentViewMode == ViewMode::SHELF_VIEW) {
+    int cardW = 0;
+    int cardH = 0;
+    getShelfCoverSize(renderer, cardW, cardH);
+    const int screenH = mainContentBottom(renderer) - 30;
+    const int availableW = screenW - LIB_SHELF_OUTER_PAD_X * 2;
+    const int availableH = screenH - gridStartY - LIB_SHELF_OUTER_PAD_Y * 2;
+    const int totalW = cardW * LIB_SHELF_COLS + LIB_SHELF_GAP_X * (LIB_SHELF_COLS - 1);
+    const int totalH = cardH * LIB_SHELF_ROWS + LIB_SHELF_GAP_Y * (LIB_SHELF_ROWS - 1);
+    const int originX = LIB_SHELF_OUTER_PAD_X + std::max(0, (availableW - totalW) / 2);
+    const int originY = gridStartY + LIB_SHELF_OUTER_PAD_Y + std::max(0, (availableH - totalH) / 2);
+    const int col = (x - originX) / (cardW + LIB_SHELF_GAP_X);
+    const int row = (y - originY) / (cardH + LIB_SHELF_GAP_Y);
+    if (col < 0 || col >= LIB_SHELF_COLS || row < 0) {
+      return -1;
+    }
+    const int idx = row * LIB_SHELF_COLS + col;
+    return (idx < itemCount) ? idx : -1;
+  }
+
+  // Plain list rows.
+  const int slot = (y - (gridStartY + 2)) / LIST_ITEM_HEIGHT;
+  if (slot < 0) {
+    return -1;
+  }
+  const int idx = listScrollOffset + slot;
+  return (idx < itemCount) ? idx : -1;
+}
+
+bool LibraryActivity::onTouchTap(int16_t x, int16_t y) {
+  if (letterPickerVisible_) {
+    // The letter picker is a modal grid; fall through so Confirm activates the highlighted letter.
+    return false;
+  }
+  if (handleTabBarTouchTap(renderer, x, y)) {
+    return true;
+  }
+  if (tabSelectorIndex != 1) {
+    return true;
+  }
+
+  const int itemCount = static_cast<int>(currentPageItems.size());
+  const int index = libraryItemIndexForTouch(x, y);
+  if (index >= 0) {
+    selectorIndex = index;
+    isHeaderButtonSelected = false;
+    isIndexButtonSelected = false;
+    isSortButtonSelected = false;
+    handleConfirmAction(itemCount);
+    return true;
+  }
+
+  return true;  // Header / gaps are inert; avoid accidental activation.
+}
+
+bool LibraryActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)endX;
+  (void)endY;
+  constexpr int kSwipeThreshold = 40;
+  if (dx <= -kSwipeThreshold) {
+    tabSelectorIndex = (tabSelectorIndex + 1) % TAB_COUNT;
+    navigateToSelectedMenu();
+    return true;
+  }
+  if (dx >= kSwipeThreshold) {
+    tabSelectorIndex = (tabSelectorIndex - 1 + TAB_COUNT) % TAB_COUNT;
+    navigateToSelectedMenu();
+    return true;
+  }
+  if (tabSelectorIndex != 1 || isInitialLoading_ || isIndexing_) {
+    return true;
+  }
+  if (dy <= -kSwipeThreshold) {
+    goToNextPage();
+  } else if (dy >= kSwipeThreshold) {
+    goToPreviousPage();
+  }
+  return true;
 }
 
 /**

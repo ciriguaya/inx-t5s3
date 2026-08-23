@@ -615,6 +615,7 @@ bool ChapterHtmlSlimParser::parseHtmlThroughExpat(const bool callProgressPopup) 
   XML_Index failByte = 0;
   uint32_t bytesReadTotal = 0;
   int done = 0;
+  uint32_t parseChunkCount = 0;
   do {
     void* const buf = XML_GetBuffer(parser, 1024);
     if (!buf) {
@@ -636,6 +637,11 @@ bool ChapterHtmlSlimParser::parseHtmlThroughExpat(const bool callProgressPopup) 
       failColumn = XML_GetCurrentColumnNumber(parser);
       failByte = XML_GetCurrentByteIndex(parser);
       break;
+    }
+    // Long chapters are laid out in one uninterrupted main-loop call. Yield
+    // every 32 KB so the IDLE task keeps running (and its watchdog stays fed).
+    if ((++parseChunkCount & 0x1F) == 0) {
+      yield();
     }
   } while (!done);
 

@@ -52,6 +52,8 @@ uint32_t Section::onPageComplete(std::unique_ptr<Page> page, const std::function
     return 0;
   }
   pageCount++;
+  // Keep the IDLE task (and its watchdog) alive between page builds.
+  yield();
   return position;
 }
 

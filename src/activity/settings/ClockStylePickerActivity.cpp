@@ -130,3 +130,38 @@ void ClockStylePickerActivity::loop() {
     updateRequired = true;
   }
 }
+
+bool ClockStylePickerActivity::onTouchTap(int16_t x, int16_t y) {
+  if (subActivity) {
+    return true;
+  }
+  const int w = renderer.getScreenWidth();
+  if (x < w / 3) {
+    selectedIndex = (selectedIndex + SleepClockRenderer::styleCount() - 1) % SleepClockRenderer::styleCount();
+    updateRequired = true;
+  } else if (x > w * 2 / 3) {
+    selectedIndex = (selectedIndex + 1) % SleepClockRenderer::styleCount();
+    updateRequired = true;
+  } else {
+    applySelection();
+  }
+  return true;
+}
+
+bool ClockStylePickerActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)dy;
+  (void)endX;
+  (void)endY;
+  if (subActivity) {
+    return true;
+  }
+  constexpr int kSwipeThreshold = 40;
+  if (dx <= -kSwipeThreshold) {
+    selectedIndex = (selectedIndex + 1) % SleepClockRenderer::styleCount();
+    updateRequired = true;
+  } else if (dx >= kSwipeThreshold) {
+    selectedIndex = (selectedIndex + SleepClockRenderer::styleCount() - 1) % SleepClockRenderer::styleCount();
+    updateRequired = true;
+  }
+  return true;
+}

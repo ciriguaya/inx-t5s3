@@ -13,6 +13,7 @@ class ImageViewerActivity final : public Activity {
 
   void onEnter() override;
   void loop() override;
+  void requestRedraw() override { updateRequired_ = true; }
 
  private:
   std::string currentPath_;

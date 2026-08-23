@@ -2,6 +2,18 @@
 
 #ifdef SIMULATOR
 
+// The T5S3 e-ink panel is 960×540 physical (540×960 portrait logical), not the
+// crosspoint-simulator's X4 Pro default (800×480). This header is force-included
+// into every TU of the simulator build (via -include), so these overrides reach
+// the simulator lib's own sources too, keeping the SDL window, framebuffer and
+// touch mapping consistent with the project's GfxRenderer at 960×540.
+#ifndef EINK_DISPLAY_WIDTH
+#define EINK_DISPLAY_WIDTH 960
+#endif
+#ifndef EINK_DISPLAY_HEIGHT
+#define EINK_DISPLAY_HEIGHT 540
+#endif
+
 #ifdef __cplusplus
 #include <chrono>
 #include <cstdint>

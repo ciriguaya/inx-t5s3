@@ -290,4 +290,7 @@ class CategorySettingsActivity final : public ActivityWithSubactivity, public Me
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  bool onTouchTap(int16_t x, int16_t y) override;
+  bool onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) override;
+  void requestRedraw() override { updateRequired = true; }
 };

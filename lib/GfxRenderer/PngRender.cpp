@@ -441,7 +441,7 @@ int quantizeGray(const int corrected, const ImageRenderMode mode) {
 void drawQuantizedPixel(const RenderContext& ctx, const int x, const int y, const int q) {
   if (ctx.mode == ImageRenderMode::OneBit) {
     if (q == 0) {
-      ctx.renderer->drawPixel(x, y, true);
+      ctx.renderer->drawPixelRaw(x, y, true);  // image pixels: never night-mode inverted
     }
     return;
   }
@@ -455,14 +455,14 @@ void drawQuantizedPixel(const RenderContext& ctx, const int x, const int y, cons
   }
   if (renderMode == GfxRenderer::BW) {
     if ((ctx.mode == ImageRenderMode::TwoBit && level > 0) || (ctx.mode == ImageRenderMode::OneBit && level < 3)) {
-      ctx.renderer->drawPixel(x, y, true);
+      ctx.renderer->drawPixelRaw(x, y, true);
     }
   } else if (renderMode == GfxRenderer::GRAYSCALE_MSB &&
              (ctx.renderer->deviceIsX3() ? (level == 2 || level == 3) : (level == 1 || level == 2))) {
-    ctx.renderer->drawPixel(x, y, false);
+    ctx.renderer->drawPixelRaw(x, y, false);
   } else if (renderMode == GfxRenderer::GRAYSCALE_LSB &&
              (ctx.renderer->deviceIsX3() ? (level == 1 || level == 3) : level == 1)) {
-    ctx.renderer->drawPixel(x, y, false);
+    ctx.renderer->drawPixelRaw(x, y, false);
   }
 }
 
@@ -524,6 +524,10 @@ bool decodeAndRender(FsFile& pngFile, RenderContext& renderCtx, int outW, int ou
 
   int currentSrcY = -1;
   for (int oy = 0; oy < outH; oy++) {
+    // Keep the IDLE task (and its watchdog) alive during large PNG decodes.
+    if ((oy & 0x3F) == 0) {
+      yield();
+    }
     const int sy = srcY + (outH <= 1 ? 0 : std::min(srcH - 1, (oy * srcH) / outH));
     while (currentSrcY < sy) {
       if (!decodeScanline(ctx)) {

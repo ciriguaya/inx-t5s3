@@ -385,6 +385,10 @@ bool convertToEpub(const std::string& mobiPath, const std::string& outEpubPath) 
     std::vector<uint8_t> raw;
     std::vector<uint8_t> decompressed;
     for (uint16_t i = 1; i <= header.recordCount; i++) {
+      // Mobi transcoding runs in the main loop; keep the IDLE task watchdog fed.
+      if ((i & 0x3F) == 0) {
+        yield();
+      }
       const uint32_t recLen = records[i + 1] - records[i];
       raw.resize(recLen);
       src.seek(records[i]);

@@ -588,12 +588,16 @@ bool Epub::load(const bool buildIfMissing) {
   std::string opfPath;
   if (!findContentOpfFile(&opfPath)) return false;
   contentBasePath = opfPath.substr(0, opfPath.find_last_of('/') + 1);
+  // The metadata build runs in the main loop; keep the IDLE task watchdog fed
+  // between phases (each phase can take a second or more on the T5S3).
+  yield();
 
   size_t opfSize;
   if (!getItemSize(opfPath, &opfSize)) return false;
 
   ContentOpfParser opfParser(cachePath, getBasePath(), opfSize, bookMetadataCache.get());
   if (!opfParser.setup() || !readItemContentsToStream(opfPath, opfParser, 1024)) return false;
+  yield();
 
   meta.title = opfParser.title;
   meta.author = opfParser.author;
@@ -618,15 +622,18 @@ bool Epub::load(const bool buildIfMissing) {
     Serial.printf("[EBP] Warning: Failed to extract CSS files\n");
   }
   bookMetadataCache->endCssPass();
+  yield();
 
   bookMetadataCache->beginTocPass();
   bool tocParsed = (!tocNavItem.empty()) ? parseTocNavFile() : false;
   if (!tocParsed && !tocNcxItem.empty()) tocParsed = parseTocNcxFile();
   bookMetadataCache->appendSyntheticTocFromSpineIfEmpty();
   bookMetadataCache->endTocPass();
+  yield();
 
   bookMetadataCache->endWrite();
   bookMetadataCache->buildBookBin(filepath, meta);
+  yield();
   bookMetadataCache->cleanupTmpFiles();
   bookMetadataCache.reset(new BookMetadataCache(cachePath));
   return bookMetadataCache->load();

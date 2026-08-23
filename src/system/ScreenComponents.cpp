@@ -33,6 +33,11 @@ void drawBatteryLightningBolt(const GfxRenderer& renderer, const int boltX, cons
 }
 
 bool formatMenuClock(char* out, const size_t outSize) {
+#ifdef SIMULATOR
+  (void)out;
+  (void)outSize;
+  return false;
+#else
   if (!out || outSize == 0 || !gpio.deviceIsX3() || !SETTINGS.showMenuClock) {
     return false;
   }
@@ -55,6 +60,7 @@ bool formatMenuClock(char* out, const size_t outSize) {
 
   std::snprintf(out, outSize, "%02u:%02u", hour, dt.minute);
   return true;
+#endif
 }
 
 }  // namespace

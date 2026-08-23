@@ -1,47 +1,50 @@
 /**
  * @file BatteryMonitor.cpp
- * @brief Definitions for BatteryMonitor.
+ * @brief T5S3 implementation of the Inx BatteryMonitor interface.
+ *
+ * The T5S3 has no battery ADC divider; it uses a BQ27220 fuel gauge instead.
+ * The (adcPin, dividerMultiplier) constructor arguments are kept for interface
+ * compatibility and ignored.
  */
 
 #include "BatteryMonitor.h"
 
-#include <esp32-hal-adc.h>
-#include <esp_adc_cal.h>
+#include <BoardT5S3.h>
 
-inline float min(const float a, const float b) { return a < b ? a : b; }
-inline float max(const float a, const float b) { return a > b ? a : b; }
-
-BatteryMonitor::BatteryMonitor(uint8_t adcPin, float dividerMultiplier)
+BatteryMonitor::BatteryMonitor(const uint8_t adcPin, const float dividerMultiplier)
     : _adcPin(adcPin), _dividerMultiplier(dividerMultiplier) {}
 
-uint16_t BatteryMonitor::readPercentage() const { return percentageFromMillivolts(readMillivolts()); }
+uint16_t BatteryMonitor::readPercentage() const {
+  uint16_t soc = 0;
+  if (BoardT5S3::readBatteryStateOfCharge(&soc)) {
+    return soc <= 100 ? soc : 100;
+  }
+  return 0;
+}
 
 uint16_t BatteryMonitor::readMillivolts() const {
-  const uint16_t raw = readRawMillivolts();
-  const uint32_t mv = millivoltsFromRawAdc(raw);
-  return static_cast<uint32_t>(mv * _dividerMultiplier);
+  BoardT5S3::BatteryState state;
+  if (BoardT5S3::readBatteryState(&state)) {
+    return state.batteryVoltageMv;
+  }
+  return 0;
 }
 
-uint16_t BatteryMonitor::readRawMillivolts() const {
-  const uint16_t raw = analogRead(_adcPin);
-  return raw;
+uint16_t BatteryMonitor::readRawMillivolts() const { return readMillivolts(); }
+
+double BatteryMonitor::readVolts() const { return readMillivolts() / 1000.0; }
+
+uint16_t BatteryMonitor::percentageFromMillivolts(const uint16_t millivolts) {
+  // Li-ion 4.2V curve approximation (fallback; the gauge normally reports SOC directly).
+  if (millivolts >= 4100) return 100;
+  if (millivolts >= 4000) return 90;
+  if (millivolts >= 3900) return 75;
+  if (millivolts >= 3800) return 55;
+  if (millivolts >= 3700) return 35;
+  if (millivolts >= 3600) return 20;
+  if (millivolts >= 3500) return 10;
+  if (millivolts >= 3300) return 5;
+  return 0;
 }
 
-double BatteryMonitor::readVolts() const { return static_cast<double>(readMillivolts()) / 1000.0; }
-
-uint16_t BatteryMonitor::percentageFromMillivolts(uint16_t millivolts) {
-  double volts = millivolts / 1000.0;
-
-  double y = -144.9390 * volts * volts * volts + 1655.8629 * volts * volts - 6158.8520 * volts + 7501.3202;
-
-  y = max(y, 0.0);
-  y = min(y, 100.0);
-  y = round(y);
-  return static_cast<int>(y);
-}
-
-uint16_t BatteryMonitor::millivoltsFromRawAdc(uint16_t adc_raw) {
-  esp_adc_cal_characteristics_t adc_chars;
-  esp_adc_cal_characterize(ADC_UNIT_1, ADC_ATTEN_DB_12, ADC_WIDTH_BIT_12, 1100, &adc_chars);
-  return esp_adc_cal_raw_to_voltage(adc_raw, &adc_chars);
-}
+uint16_t BatteryMonitor::millivoltsFromRawAdc(const uint16_t adc_raw) { return adc_raw; }

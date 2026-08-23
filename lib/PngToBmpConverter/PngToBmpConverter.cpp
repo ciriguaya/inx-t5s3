@@ -784,6 +784,10 @@ bool PngToBmpConverter::pngFileToBmpStreamInternal(FsFile& pngFile, Print& bmpOu
 
   // Process each scanline
   for (uint32_t y = 0; y < height; y++) {
+    // Keep the IDLE task (and its watchdog) alive during large PNG conversions.
+    if ((y & 0x3F) == 0) {
+      yield();
+    }
     // Decode one scanline
     if (!decodeScanline(ctx)) {
       LOG_ERR("PNG", "Failed to decode scanline %u", y);

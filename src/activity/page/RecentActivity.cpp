@@ -8,6 +8,7 @@
 #include <Bitmap.h>
 #include <GfxRenderer.h>
 #include <HalGPIO.h>
+#include <HalStorage.h>
 #include <HardwareSerial.h>
 #include <ImageRender.h>
 #include <SDCardManager.h>
@@ -25,6 +26,7 @@
 
 #include "../reader/Epub/EpubActivity.h"
 #include "../reader/Epub/EpubAnnotations.h"
+#include "../reader/HighlightPersistence.h"
 #include "Epub/Page.h"
 #include "Epub/Section.h"
 #include "components/recent/RecentLayouts.h"
@@ -637,6 +639,7 @@ void RecentActivity::onEnter() {
   }
 
   pendingInitialLoadingFrame_ = false;
+  loadLatestHighlight();
   updateRequired = true;
 }
 
@@ -658,6 +661,58 @@ void RecentActivity::onExit() {
   std::unordered_map<std::string, std::string>().swap(coverPathCache_);
   renderer.resetTransientReaderState();
   Activity::onExit();
+}
+
+void RecentActivity::loadLatestHighlight() {
+  HighlightEntry entry;
+  hasLatestHighlight = HighlightPersistence::loadLatestHighlight(entry);
+  latestQuoteText.clear();
+  latestQuoteBook.clear();
+  if (hasLatestHighlight) {
+    latestQuoteText = entry.selectedText;
+    latestQuoteBook = entry.bookTitle;
+  }
+}
+
+void RecentActivity::renderHighlightBanner() {
+  if (!bannerVisible()) {
+    return;
+  }
+  const int screenW = renderer.getScreenWidth();
+  const int top = mainContentTop() + 4;
+  const int h = HIGHLIGHT_BANNER_HEIGHT - 10;
+  constexpr int kPadX = 14;
+  constexpr int kTitleFont = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
+  constexpr int kBodyFont = ATKINSON_HYPERLEGIBLE_12_FONT_ID;
+
+  renderer.rectangle.fill(kPadX, top, screenW - kPadX * 2, h, false, true);
+  renderer.rectangle.render(kPadX, top, screenW - kPadX * 2, h, true, true);
+
+  int y = top + 12;
+  // Quote text: up to three truncated lines.
+  std::string text = latestQuoteText;
+  const int textW = screenW - kPadX * 4 - 8;
+  for (int line = 0; line < 3 && !text.empty(); ++line) {
+    const std::string l = renderer.text.truncate(kBodyFont, text.c_str(), textW);
+    if (l.empty()) break;
+    renderer.text.render(kBodyFont, kPadX * 2, y, l.c_str(), true);
+    y += renderer.text.getLineHeight(kBodyFont);
+    if (text.size() <= l.size()) {
+      text.clear();
+      break;
+    }
+    text = text.substr(l.size());
+  }
+  if (!text.empty()) {
+    renderer.text.render(kBodyFont, kPadX * 2, y, "\xC2\xB7 \xC2\xB7 \xC2\xB7", true);
+  }
+
+  y += 6;
+  const std::string book = renderer.text.truncate(kTitleFont, latestQuoteBook.c_str(), textW);
+  renderer.text.render(kTitleFont, kPadX * 2, y, book.c_str(), true, EpdFontFamily::BOLD);
+  y += renderer.text.getLineHeight(kTitleFont) + 4;
+  // Intentionally no "tap to open" caption: the banner card itself is tappable.
+  (void)y;
 }
 
 void RecentActivity::renderInitialLoadingFrame() {
@@ -994,6 +1049,7 @@ void RecentActivity::pumpDisplayFromLoop() {
   renderer.clearScreen();
   renderTabBar(renderer);
   resetRecentImageCacheJobs();
+  renderHighlightBanner();
 
   if (sdCardAvailable) {
     syncLayoutEngineForViewMode();
@@ -1219,4 +1275,207 @@ void RecentActivity::loop() {
       return;
     }
   }
+}
+
+int RecentActivity::touchIndexForRecentPoint(int x, int y) const {
+  const int totalBooks = static_cast<int>(recentBooks.size());
+  if (totalBooks == 0) {
+    return -1;
+  }
+
+  const int screenW = renderer.getScreenWidth();
+  const int contentBottom =
+      INX_THEME.mainTabsAtBottom() ? mainContentBottom(renderer) : renderer.getScreenHeight() - 54;
+
+  switch (currentViewMode) {
+    case ViewMode::Grid: {
+      const int startY = recentGridPaintStartY();
+      constexpr int kGridSpacing = 8;
+      const int availableWidth = screenW - (GRID_COLS + 1) * kGridSpacing;
+      const int containerWidth = availableWidth / GRID_COLS;
+      const int visibleRows = std::max(1, getVisibleRows());
+      const int availableHeight = std::max(1, contentBottom - startY - kGridSpacing * 2);
+      const int containerHeight = std::max(1, (availableHeight / visibleRows) - kGridSpacing);
+      const int col = (x - kGridSpacing) / (containerWidth + kGridSpacing);
+      const int row = scrollOffset + (y - startY - kGridSpacing) / (containerHeight + kGridSpacing);
+      if (col < 0 || col >= GRID_COLS || row < 0) {
+        return -1;
+      }
+      const int idx = row * GRID_COLS + col;
+      return (idx < totalBooks) ? idx : -1;
+    }
+    case ViewMode::Icons: {
+      const int startY = recentIconsPaintStartY();
+      constexpr int kCols = ICON_COLS;
+      constexpr int kRowsVisible = ICON_ROWS;
+      constexpr int kGap = 8;
+      constexpr int kMarginX = 10;
+      constexpr int kMarginY = 8;
+      const int availW = std::max(1, screenW - kMarginX * 2);
+      const int availH = std::max(1, contentBottom - startY - kMarginY * 2);
+      const int frameW = std::max(40, (availW - (kCols - 1) * kGap) / kCols);
+      const int frameH = std::max(40, (availH - (kRowsVisible - 1) * kGap) / kRowsVisible);
+      const int blockW = kCols * frameW + (kCols - 1) * kGap;
+      const int blockH = kRowsVisible * frameH + (kRowsVisible - 1) * kGap;
+      const int row0X = kMarginX + std::max(0, (availW - blockW) / 2);
+      const int blockTop = startY + kMarginY + std::max(0, (availH - blockH) / 2);
+      const int col = (x - row0X) / (frameW + kGap);
+      const int row = scrollOffset + (y - blockTop) / (frameH + kGap);
+      if (col < 0 || col >= kCols || row < 0) {
+        return -1;
+      }
+      const int idx = row * kCols + col;
+      return (idx < totalBooks) ? idx : -1;
+    }
+    case ViewMode::List: {
+      const int startY = recentListPaintStartY();
+      constexpr int listPadY = 6;
+      const int listTop = startY + listPadY;
+      const int contentH = std::max(1, contentBottom - listTop);
+      if (y < listTop) {
+        return -1;
+      }
+      const int slot = (y - listTop) * LIST_VISIBLE_ITEMS / contentH;
+      if (slot < 0 || slot >= LIST_VISIBLE_ITEMS) {
+        return -1;
+      }
+      const int idx = scrollOffset + slot;
+      return (idx < totalBooks) ? idx : -1;
+    }
+    case ViewMode::Cover:
+    case ViewMode::Flow:
+    default:
+      // Single-book cover / carousel: the whole body acts on the selected book.
+      return (selectorIndex >= 0 && selectorIndex < totalBooks) ? selectorIndex : -1;
+  }
+}
+
+bool RecentActivity::onTouchTap(int16_t x, int16_t y) {
+  if (homeMenuDrawer_ && homeMenuDrawer_->visible()) {
+    return true;  // Drawer input is button-driven; swallow taps while it is open.
+  }
+
+  if (removeConfirmOpen_) {
+    // Bottom hint band: Cancel (left) / Remove (right). Anywhere else: ignore.
+    const int hintY = renderer.getScreenHeight() - 40;
+    if (y >= hintY) {
+      mappedInput.injectButtonTap(x < renderer.getScreenWidth() / 2 ? MappedInputManager::Button::Back
+                                                                     : MappedInputManager::Button::Confirm);
+    }
+    return true;
+  }
+
+  if (handleTabBarTouchTap(renderer, x, y)) {
+    return true;
+  }
+  if (tabSelectorIndex != 0) {
+    return true;  // Another tab owns the body.
+  }
+
+  // Tap on the latest-highlight banner opens the quotes browser.
+  if (hasLatestHighlight && y >= mainContentTop() && y < mainContentTop() + HIGHLIGHT_BANNER_HEIGHT) {
+    auto openQuotes = onGoToQuotes;
+    if (openQuotes) {
+      openQuotes();
+    }
+    return true;
+  }
+
+  const int index = touchIndexForRecentPoint(x, y);
+  if (index >= 0) {
+    selectorIndex = index;
+    const auto& book = recentBooks[static_cast<size_t>(index)];
+    openBookPath(book.path, book.title, book.author, true);
+    return true;
+  }
+
+  return true;  // Empty body areas are inert on the home screen.
+}
+
+bool RecentActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)endX;
+  (void)endY;
+  if (homeMenuDrawer_ && homeMenuDrawer_->visible()) {
+    return true;
+  }
+  if (removeConfirmOpen_) {
+    return true;
+  }
+
+  constexpr int kSwipeThreshold = 40;
+  const int totalBooks = static_cast<int>(recentBooks.size());
+
+  // Home tab (recents): horizontal swipes browse the book carousel instead of switching tabs - this is
+  // a touch-first device and the tabs are reached by tapping the tab bar. Other tabs keep the classic
+  // horizontal-swipe tab switching.
+  if (tabSelectorIndex == 0) {
+    if (totalBooks > 0 && abs(dx) >= kSwipeThreshold) {
+      selectorIndex = dx <= -kSwipeThreshold ? std::min(totalBooks - 1, selectorIndex + 1)
+                                             : std::max(0, selectorIndex - 1);
+      updateRequired = true;
+      return true;
+    }
+  } else if (abs(dx) >= kSwipeThreshold) {
+    if (dx <= -kSwipeThreshold) {
+      // Swipe left: next tab.
+      tabSelectorIndex = (tabSelectorIndex + 1) % TAB_COUNT;
+      navigateToSelectedMenu();
+      return true;
+    }
+    tabSelectorIndex = (tabSelectorIndex - 1 + TAB_COUNT) % TAB_COUNT;
+    navigateToSelectedMenu();
+    return true;
+  }
+
+  if (totalBooks == 0 || tabSelectorIndex != 0) {
+    return true;
+  }
+
+  const bool isGridOrIcons = (currentViewMode == ViewMode::Grid || currentViewMode == ViewMode::Icons);
+  const int pageSize = isGridOrIcons ? (getVisibleRows() * (currentViewMode == ViewMode::Icons ? ICON_COLS : GRID_COLS))
+                                     : (currentViewMode == ViewMode::List ? LIST_VISIBLE_ITEMS : 1);
+  if (dy <= -kSwipeThreshold) {
+    selectorIndex = std::min(totalBooks - 1, selectorIndex + pageSize);
+  } else if (dy >= kSwipeThreshold) {
+    selectorIndex = std::max(0, selectorIndex - pageSize);
+  } else {
+    return true;
+  }
+
+  if (currentViewMode == ViewMode::List) {
+    const int visibleItems = LIST_VISIBLE_ITEMS;
+    if (selectorIndex < scrollOffset) {
+      scrollOffset = selectorIndex;
+    } else if (selectorIndex >= scrollOffset + visibleItems) {
+      scrollOffset = selectorIndex - visibleItems + 1;
+    }
+    scrollOffset = std::max(0, std::min(scrollOffset, std::max(0, totalBooks - visibleItems)));
+  } else if (isGridOrIcons) {
+    const int cols = (currentViewMode == ViewMode::Icons) ? ICON_COLS : GRID_COLS;
+    const int currentRow = selectorIndex / cols;
+    const int visibleRows = getVisibleRows();
+    if (currentRow < scrollOffset) {
+      scrollOffset = currentRow;
+    } else if (currentRow >= scrollOffset + visibleRows) {
+      scrollOffset = currentRow - visibleRows + 1;
+    }
+    const int totalRows = (totalBooks + cols - 1) / cols;
+    scrollOffset = std::max(0, std::min(scrollOffset, std::max(0, totalRows - visibleRows)));
+  }
+
+  updateRequired = true;
+  return true;
+}
+
+bool RecentActivity::onTouchHold(int16_t x, int16_t y, unsigned long heldMs) {
+  (void)x;
+  (void)y;
+  (void)heldMs;
+  // Long-press opens the home menu drawer (remove-from-recent etc.).
+  if (!homeMenuDrawer_ || !homeMenuDrawer_->visible()) {
+    if (!removeConfirmOpen_) {
+      openHomeMenuDrawer();
+    }
+  }
+  return true;
 }

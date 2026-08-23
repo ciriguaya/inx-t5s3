@@ -42,6 +42,16 @@ void TimeSyncActivity::loop() {
   }
 }
 
+bool TimeSyncActivity::onTouchTap(int16_t x, int16_t y) {
+  (void)x;
+  (void)y;
+  if (subActivity) {
+    return true;
+  }
+  onBack();
+  return true;
+}
+
 void TimeSyncActivity::render() {
   renderer.clearScreen();
   const int h = renderer.getScreenHeight();

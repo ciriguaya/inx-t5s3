@@ -55,6 +55,19 @@ class EpubAnnotationUi {
   void handleInput(EpubActivity& act);
   void repaint(EpubActivity& act);
 
+  /** T5S3 touch: enter highlight mode with the selection anchored at the word under (x, y). */
+  void enterAtTouch(EpubActivity& act, int x, int y);
+  /** T5S3 touch: long-press a word inside an existing highlight - opens an Inx-styled delete popup.
+   *  Returns true if the popup opened (the caller should not start a new selection). */
+  bool tryOpenHighlightDeleteAt(EpubActivity& act, int x, int y);
+  bool isDeletePopupActive() const { return deletePopupActive_; }
+  /** True while a touch selection is being dragged (anchor set, not yet committed). */
+  bool isSelecting() const { return selectingStarted_; }
+  /** T5S3 touch: extend the active selection to the word under (x, y) (drag). */
+  bool handleTouchDrag(EpubActivity& act, int x, int y);
+  /** T5S3 touch: tap toggles Start/Stop of a selection span. */
+  bool handleTouchTap(EpubActivity& act, int x, int y);
+
   void ensureDiskListLoaded(EpubActivity& act);
   void updateStoredRangesForPage(const EpubActivity& act);
 
@@ -63,6 +76,9 @@ class EpubAnnotationUi {
 
   std::string extractRangeText(size_t anchorFlat, size_t focusFlat) const;
   void saveToStorage(EpubActivity& act);
+
+  /** Joins the words of the text lines that contain the word range [lo, hi] (paragraph context). */
+  std::string buildParagraphTextForRange(size_t lo, size_t hi) const;
 
   void prepareWordGeometry(EpubActivity& act);
 
@@ -76,9 +92,17 @@ class EpubAnnotationUi {
 
   void moveFocusWord(int delta);
   void moveFocusLine(int delta);
+  /** Index of the word containing (x, y), or SIZE_MAX if none. */
+  size_t wordIndexAt(int x, int y) const;
   bool tryNavigationHoldRepeat(EpubActivity& act);
 
   void captureFramebuffer(EpubActivity& act);
+
+  // ---- Highlight delete popup (T5S3 long-press) ----
+  void openDeletePopup(EpubActivity& act, size_t lo, size_t hi);
+  void dismissDeletePopup(EpubActivity& act);
+  void confirmDeleteHighlight(EpubActivity& act);
+  void drawDeletePopup(EpubActivity& act);
 
   /** @param dir 0=L,1=R,2=U,3=D */
   bool isDuplicateNavEdge(int dir, unsigned long now);
@@ -110,6 +134,23 @@ class EpubAnnotationUi {
   unsigned long chordStartMs_ = 0;
   bool chordConsumed_ = false;
   bool selectingStarted_ = false;
+  /** True while the long-press delete popup is showing (modal - swallows all reader touch). */
+  bool deletePopupActive_ = false;
+  size_t deleteRangeLo_ = 0;
+  size_t deleteRangeHi_ = 0;
+  std::string deleteText_;
+  int deletePopupX_ = 0;
+  int deletePopupY_ = 0;
+  int deletePopupW_ = 0;
+  int deletePopupH_ = 0;
+  int deleteYesX_ = 0;
+  int deleteYesY_ = 0;
+  int deleteYesW_ = 0;
+  int deleteYesH_ = 0;
+  int deleteNoX_ = 0;
+  int deleteNoY_ = 0;
+  int deleteNoW_ = 0;
+  int deleteNoH_ = 0;
   /** Completed ranges while browsing between Start/Stop cycles (same page). */
   std::vector<std::pair<size_t, size_t>> pendingSpans_;
   /** Suppress duplicate wasPressed edges (ADC bounce) for the same direction. */

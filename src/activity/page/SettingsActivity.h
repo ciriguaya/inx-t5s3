@@ -104,4 +104,5 @@ class SettingsActivity final : public ActivityWithSubactivity, public Menu {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  void requestRedraw() override { updateRequired = true; }
 };

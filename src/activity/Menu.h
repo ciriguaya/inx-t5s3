@@ -102,6 +102,30 @@ class Menu {
       navigateToSelectedMenu();
     }
   }
+
+  /**
+   * @brief Touch helper: if (x, y) falls on the main tab bar, selects that tab.
+   * @return true if the tap was consumed by the tab bar
+   */
+  bool handleTabBarTouchTap(const GfxRenderer& renderer, int x, int y) {
+    const int tabY = INX_THEME.mainTabBarY(renderer);
+    const int tabH = INX_THEME.mainTabBarHeight();
+    if (y < tabY || y >= tabY + tabH) {
+      return false;
+    }
+    const int tabButtonWidth = (renderer.getScreenWidth() / TAB_COUNT) - 1;
+    if (tabButtonWidth <= 0) {
+      return false;
+    }
+    int index = x / tabButtonWidth;
+    if (index < 0) index = 0;
+    if (index >= TAB_COUNT) index = TAB_COUNT - 1;
+    if (index != tabSelectorIndex) {
+      tabSelectorIndex = index;
+      navigateToSelectedMenu();
+    }
+    return true;
+  }
 };
 
 #endif

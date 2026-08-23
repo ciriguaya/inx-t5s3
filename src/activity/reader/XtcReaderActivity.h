@@ -72,4 +72,6 @@ class XtcReaderActivity final : public ActivityWithSubactivity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  bool onTouchTap(int16_t x, int16_t y) override;
+  void requestRedraw() override { updateRequired = true; }
 };

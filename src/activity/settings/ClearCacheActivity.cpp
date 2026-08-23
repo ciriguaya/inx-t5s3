@@ -305,3 +305,38 @@ void ClearCacheActivity::loop() {
     return;
   }
 }
+
+bool ClearCacheActivity::onTouchTap(int16_t x, int16_t y) {
+  (void)x;
+  if (state == SUCCESS || state == FAILED) {
+    goBack();
+    return true;
+  }
+  if (state != WARNING) {
+    return true;
+  }
+  const int listTop = INX_THEME.drawerPageHeaderHeight();
+  const int row = (y - listTop) / kListItemHeight;
+  if (row < 0 || row > GROUP_COUNT) {
+    return true;
+  }
+  if (row < GROUP_COUNT) {
+    // Cache-group row: toggle its checkbox.
+    selectedGroups[row] = !selectedGroups[row];
+    selectedGroup = row;
+    updateRequired = true;
+    return true;
+  }
+  // Action row: clear the selected groups (same as Confirm).
+  if (!anyGroupSelected()) {
+    updateRequired = true;
+    return true;
+  }
+  xSemaphoreTake(renderingMutex, portMAX_DELAY);
+  state = CLEARING;
+  xSemaphoreGive(renderingMutex);
+  updateRequired = true;
+  vTaskDelay(10 / portTICK_PERIOD_MS);
+  clearCache();
+  return true;
+}

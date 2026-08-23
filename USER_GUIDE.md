@@ -1,5 +1,10 @@
 # Inx User Guide
 
+> **T5S3 note:** this guide was written for the upstream **Xteink X4** hardware, which has four
+> physical buttons (Back / Confirm / Left / Right). The **T5S3 port has no such buttons** — it is
+> **touch-first**, with only the boot button (power on/off, or the book menu while reading), the IO48
+> side button (Back) and the GT911 home key (Home). See the [Controls table in the README](README.md#controls-touch-first) for the authoritative input map; button references in this guide mostly do not apply.
+
 Welcome to the **Inx** firmware. This guide outlines the hardware controls, navigation, and reading features of the device.
 
 - [Inx User Guide](#crosspoint-user-guide)
@@ -163,7 +168,7 @@ You can customize the sleep screen by placing custom images in specific location
 > [!TIP]
 > For best results:
 > - Use uncompressed BMP files with 24-bit color depth
-> - Use a resolution of 480x800 pixels to match the device's screen resolution.
+> - Use a resolution of 540x960 pixels (portrait, matching the T5S3's logical screen).
 
 ---
 

@@ -350,6 +350,8 @@ void ReaderPresetEditorActivity::renderPreview() {
   if (fullBarHeight > 0) {
     renderPreviewFullBar(previewHeight_ - fullBarHeight, fullBarHeight);
   }
+
+  renderSavePill();  // last: stays on top of any preview text that reaches the top-right corner
 }
 
 void ReaderPresetEditorActivity::renderPreviewStatusBar(int barTop, int barHeight) {
@@ -426,6 +428,33 @@ void ReaderPresetEditorActivity::renderPreviewFullBar(int barTop, int barHeight)
   }
 }
 
+void ReaderPresetEditorActivity::renderSavePill() {
+  // An outlined rounded pill with bold ink text, matching the inx popup/drawer pill style (see
+  // SettingsDrawer::drawModePill) - the one explicit, discoverable "save this preset" action.
+  constexpr int kFont = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
+  const char* label = "Save";
+  const int labelW = renderer.text.getWidth(kFont, label, EpdFontFamily::BOLD);
+  const int padX = 12;
+  const int pillH = 34;
+  savePillW_ = labelW + padX * 2;
+  savePillH_ = pillH;
+  savePillX_ = renderer.getScreenWidth() - 20 - savePillW_;
+  savePillY_ = 10;
+
+  renderer.rectangle.fill(savePillX_, savePillY_, savePillW_, savePillH_, false, /*rounded=*/true, /*subtle=*/true);
+  renderer.rectangle.render(savePillX_, savePillY_, savePillW_, savePillH_, true, /*rounded=*/true, /*subtle=*/true);
+  const int textY = savePillY_ + (pillH - renderer.text.getLineHeight(kFont)) / 2;
+  renderer.text.render(kFont, savePillX_ + padX, textY, label, true, EpdFontFamily::BOLD);
+}
+
+void ReaderPresetEditorActivity::beginSave() {
+  if (isNew_) {
+    promptName();  // name the new preset, then doSaveAndFinish() runs after the keyboard tears down
+  } else {
+    doSaveAndFinish();
+  }
+}
+
 void ReaderPresetEditorActivity::promptName() {
   if (isNew_) {
     name_ = defaultPresetNameFor(working_);
@@ -482,5 +511,42 @@ void ReaderPresetEditorActivity::loop() {
 
   if (drawer_) {
     drawer_->handleInput(mappedInput);
+  }
+}
+
+bool ReaderPresetEditorActivity::onTouchTap(int16_t x, int16_t y) {
+  if (subActivity) {
+    return true;
+  }
+  // The Save pill in the preview's top-right corner - same save flow as leaving via Back.
+  if (savePillW_ > 0 && x >= savePillX_ && x < savePillX_ + savePillW_ && y >= savePillY_ &&
+      y < savePillY_ + savePillH_) {
+    beginSave();
+    return true;
+  }
+  if (drawer_) {
+    drawer_->handleTouchTap(x, y);  // embedded drawer covers the bottom half; preview taps are inert
+  }
+  return true;
+}
+
+bool ReaderPresetEditorActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)endX;
+  (void)endY;
+  if (subActivity) {
+    return true;
+  }
+  if (drawer_) {
+    drawer_->handleTouchSwipe(dx, dy);
+  }
+  return true;
+}
+
+void ReaderPresetEditorActivity::requestRedraw() {
+  if (drawer_) {
+    drawer_->render();  // embedded: also pushes the preview via the invalidate callback
+  } else {
+    renderPreview();
+    renderer.displayBuffer(HalDisplay::FAST_REFRESH);
   }
 }

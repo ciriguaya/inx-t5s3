@@ -980,3 +980,30 @@ void StatisticActivity::loop() {
     return;
   }
 }
+
+bool StatisticActivity::onTouchTap(int16_t x, int16_t y) {
+  // Tab-bar taps navigate to any tab (Home / Library / Settings / Sync).
+  if (handleTabBarTouchTap(renderer, x, y)) {
+    return true;
+  }
+  // The statistics body is a read-only dashboard; taps there are inert.
+  return true;
+}
+
+bool StatisticActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)endX;
+  (void)endY;
+  constexpr int kSwipeThreshold = 40;
+  if (dx <= -kSwipeThreshold) {
+    // Swipe left: next tab (wraps; unsupported tabs just return here).
+    tabSelectorIndex = (tabSelectorIndex + 1) % TAB_COUNT;
+    navigateToSelectedMenu();
+    return true;
+  }
+  if (dx >= kSwipeThreshold) {
+    tabSelectorIndex = (tabSelectorIndex - 1 + TAB_COUNT) % TAB_COUNT;
+    navigateToSelectedMenu();
+    return true;
+  }
+  return true;  // Vertical swipes are inert on the stats dashboard.
+}

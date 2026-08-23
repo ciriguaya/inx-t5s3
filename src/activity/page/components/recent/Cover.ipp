@@ -3,7 +3,7 @@ void recent::Cover::render(RecentActivity& self) { self.renderCoverMode(); }
 void RecentActivity::renderCoverMode() {
   const int screenW = renderer.getScreenWidth();
   const int screenH = renderer.getScreenHeight();
-  const int bodyTop = mainContentTop() + 6;
+  const int bodyTop = mainContentTop() + (bannerVisible() ? HIGHLIGHT_BANNER_HEIGHT : 0) + 6;
   const int bodyBottom = INX_THEME.mainTabsAtBottom() ? mainContentBottom(renderer) : screenH - 36;
   const int bodyH = std::max(1, bodyBottom - bodyTop);
 

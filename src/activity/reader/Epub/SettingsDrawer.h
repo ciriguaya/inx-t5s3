@@ -58,6 +58,12 @@ class SettingsDrawer {
    */
   void handleInput(MappedInputManager& input);
 
+  /** T5S3 touch: tap a visible row - separators expand/collapse their group, everything else
+   *  advances/cycles its value. Returns true when the tap hit the drawer. */
+  bool handleTouchTap(int16_t x, int16_t y);
+  /** T5S3 touch: vertical swipes move the selection, horizontal swipes adjust the selected value. */
+  bool handleTouchSwipe(int16_t dx, int16_t dy);
+
   /**
    * @brief Checks if the drawer has been dismissed
    * @return true if dismissed, false otherwise
@@ -159,6 +165,9 @@ class SettingsDrawer {
     ReaderSmartImageRefresh,  ///< Global: half refresh on image pages
     PageAutoTurn
   };
+
+  /** True for rows rendered as checkboxes (tap toggles; no +/- zones). */
+  bool isToggleRow(MenuItem item) const;
 
   /**
    * @struct MenuEntry

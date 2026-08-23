@@ -12,6 +12,7 @@
 #include <new>
 
 #include "EpubActivity.h"
+#include "../HighlightPersistence.h"
 #include "system/FontManager.h"
 #include "system/Fonts.h"
 #include "system/MappedInputManager.h"
@@ -24,6 +25,32 @@ constexpr int kHighlightLatticeStepPx = 2;
 constexpr unsigned long kNavEdgeDebounceMs = 130;
 constexpr unsigned long kNavRepeatInitialMs = 700;
 constexpr unsigned long kNavRepeatIntervalMs = 95;
+
+// Highlight-delete popup geometry (Inx-styled: paper card, rounded, bold title, button row).
+constexpr int kDeletePopupW = 380;
+constexpr int kDeletePopupH = 210;
+constexpr int kDeletePopupBtnH = 50;
+constexpr int kDeletePopupFont = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
+constexpr int kDeletePopupTitleFont = ATKINSON_HYPERLEGIBLE_12_FONT_ID;
+
+/** Case-insensitive whitespace-collapsed compare used to match stored highlight texts. */
+std::string normalizeHighlightText(const std::string& s) {
+  std::string out;
+  out.reserve(s.size());
+  bool pendingSpace = false;
+  for (const char c : s) {
+    if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+      pendingSpace = !out.empty();
+      continue;
+    }
+    if (pendingSpace) {
+      out += ' ';
+      pendingSpace = false;
+    }
+    out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+  }
+  return out;
+}
 
 }  // namespace
 
@@ -187,15 +214,15 @@ void EpubAnnotationUi::enter(EpubActivity& act) {
 
 void EpubAnnotationUi::exit(EpubActivity& act) {
   mode_ = false;
+  deletePopupActive_ = false;
+  deleteText_.clear();
   selectingStarted_ = false;
-  // swap, not .clear() - .clear() empties the contents but keeps the heap capacity reserved for
-  // reuse; a page with many highlights/words can grow these well past what's needed once the UI
-  // closes (same fix as EpubDictionaryUi's releaseDefinitionMemory()).
+  // Keep the word index + cache keys across gestures: re-entering highlight mode on the same page then
+  // skips the expensive full-page word-index rebuild (prepareWordGeometry's cache-hit path), which was
+  // a big part of the perceived long-press lag. The index is rebuilt automatically when the page, font
+  // or margins change (cache-key mismatch).
   std::vector<std::pair<size_t, size_t>>().swap(pendingSpans_);
   std::vector<std::pair<size_t, size_t>>().swap(storedRanges_);
-  std::vector<PageWordHit>().swap(words_);
-  std::vector<size_t>().swap(lineFirst_);
-  clearWordIndexCache();
   annLastNavEdgeDir_ = -1;
   annNavRepeatDir_ = -1;
   for (auto& ch : captureChunks_) {
@@ -304,12 +331,51 @@ std::string EpubAnnotationUi::extractRangeText(const size_t anchorFlat, const si
   return out;
 }
 
+std::string EpubAnnotationUi::buildParagraphTextForRange(const size_t lo, const size_t hi) const {
+  if (words_.empty()) {
+    return {};
+  }
+  // Find the first and last line that overlap the selected word range.
+  auto lineForWord = [this](const size_t wordIdx) -> int {
+    for (size_t li = 0; li < lineFirst_.size(); ++li) {
+      const size_t lineStart = lineFirst_[li];
+      const size_t lineEnd = (li + 1 < lineFirst_.size()) ? lineFirst_[li + 1] : words_.size();
+      if (wordIdx >= lineStart && wordIdx < lineEnd) {
+        return static_cast<int>(li);
+      }
+    }
+    return -1;
+  };
+  const int firstLine = lineForWord(std::min(lo, words_.size() - 1));
+  const int lastLine = lineForWord(std::min(hi, words_.size() - 1));
+  if (firstLine < 0 || lastLine < 0) {
+    return {};
+  }
+  const size_t startWord = lineFirst_[static_cast<size_t>(firstLine)];
+  const size_t endWord = (static_cast<size_t>(lastLine) + 1 < lineFirst_.size())
+                             ? lineFirst_[static_cast<size_t>(lastLine) + 1]
+                             : words_.size();
+  std::string out;
+  for (size_t i = startWord; i < endWord && i < words_.size(); ++i) {
+    if (!out.empty()) {
+      out += ' ';
+    }
+    out += words_[i].text;
+  }
+  return out;
+}
+
 void EpubAnnotationUi::drawLatticeHighlightRect(EpubActivity& act, const int x, const int y, const int width,
                                                 const int height) {
   if (width <= 0 || height <= 0) {
     return;
   }
-  act.renderer.ui.fillSparseInkLatticeInRect(x, std::max(0, y), width, height, kHighlightLatticeStepPx);
+  const int topY = std::max(0, y);
+  // Two offset lattice passes (even/even + odd/odd) = a ~50% checkerboard. The single 25% pass was too
+  // pale on the 194 PPI panel; 50% reads as a solid light-gray band (the classic e-reader highlight)
+  // while the ink glyphs stay legible on top.
+  act.renderer.ui.fillSparseInkLatticeInRect(x, topY, width, height, kHighlightLatticeStepPx);
+  act.renderer.ui.fillSparseInkLatticeInRect(x + 1, topY + 1, width, height, kHighlightLatticeStepPx);
 }
 
 void EpubAnnotationUi::drawLatticeHighlightForWordIndexRange(EpubActivity& act, const size_t lo, const size_t hi) {
@@ -545,6 +611,11 @@ void EpubAnnotationUi::drawUiOverlay(EpubActivity& act) {
   if (!mode_ || suppressOverlayDraw_) {
     return;
   }
+  if (deletePopupActive_) {
+    drawDeletePopup(act);
+    act.renderer.displayBuffer(HalDisplay::FAST_REFRESH);
+    return;
+  }
   const GfxRenderer::Orientation o = act.renderer.getOrientation();
   drawHighlights(act);
   act.renderer.setOrientation(GfxRenderer::Portrait);
@@ -570,6 +641,220 @@ void EpubAnnotationUi::moveFocusWord(const int delta) {
   if (focus_ + 1 < words_.size()) {
     focus_++;
   }
+}
+
+size_t EpubAnnotationUi::wordIndexAt(const int x, const int y) const {
+  // Exact hit first (expanded a bit for fat fingers), then nearest by row/column.
+  size_t best = SIZE_MAX;
+  int bestDist = INT_MAX;
+  for (size_t i = 0; i < words_.size(); ++i) {
+    const PageWordHit& w = words_[i];
+    const int pad = 6;
+    const bool hit = x >= w.screenX - pad && x < w.screenX + w.screenW + pad && y >= w.screenY - pad &&
+                     y < w.screenY + w.screenH + pad;
+    if (hit) {
+      return i;
+    }
+    // Nearest fallback: distance in (row-major) y then x.
+    const int cy = w.screenY + w.screenH / 2;
+    const int cx = w.screenX + w.screenW / 2;
+    const int d = abs(y - cy) * 64 + abs(x - cx);
+    if (d < bestDist) {
+      bestDist = d;
+      best = i;
+    }
+  }
+  return best;
+}
+
+void EpubAnnotationUi::enterAtTouch(EpubActivity& act, const int x, const int y) {
+  if (mode_) {
+    return;
+  }
+  enter(act);
+  if (words_.empty()) {
+    return;
+  }
+  const size_t idx = wordIndexAt(x, y);
+  focus_ = (idx == SIZE_MAX) ? 0 : idx;
+  anchor_ = focus_;
+  selectingStarted_ = true;
+  act.updateRequired = true;
+}
+
+bool EpubAnnotationUi::tryOpenHighlightDeleteAt(EpubActivity& act, const int x, const int y) {
+  if (mode_ || deletePopupActive_ || !act.section || !act.epub) {
+    return false;
+  }
+  // Build the word index and capture the page (same prep as highlight mode), then check whether the
+  // long-pressed word sits inside an already-saved highlight. If it does, show the delete popup.
+  enter(act);
+  if (words_.empty()) {
+    exit(act);
+    return false;
+  }
+  updateStoredRangesForPage(act);
+  const size_t idx = wordIndexAt(x, y);
+  if (idx == SIZE_MAX) {
+    exit(act);
+    return false;
+  }
+  for (const auto& pr : storedRanges_) {
+    if (idx >= pr.first && idx <= pr.second) {
+      openDeletePopup(act, pr.first, pr.second);
+      return true;
+    }
+  }
+  exit(act);
+  return false;
+}
+
+void EpubAnnotationUi::openDeletePopup(EpubActivity& act, const size_t lo, const size_t hi) {
+  deleteRangeLo_ = lo;
+  deleteRangeHi_ = hi;
+  deleteText_ = extractRangeText(lo, hi);
+  if (deleteText_.empty()) {
+    exit(act);
+    return;
+  }
+  deletePopupActive_ = true;
+  act.updateRequired = true;  // loop() repaints the captured page + popup overlay.
+}
+
+void EpubAnnotationUi::dismissDeletePopup(EpubActivity& act) {
+  deletePopupActive_ = false;
+  deleteText_.clear();
+  exit(act);
+}
+
+void EpubAnnotationUi::confirmDeleteHighlight(EpubActivity& act) {
+  if (!act.epub || !act.section) {
+    dismissDeletePopup(act);
+    return;
+  }
+  const std::string text = deleteText_;
+  deletePopupActive_ = false;
+  deleteText_.clear();
+
+  // 1) Remove the ANN3 shard record(s) for this page so the highlight disappears from the book.
+  annotations_.removeHighlightOnPage(act.epub->getCachePath(), act.currentSpineIndex, act.section->currentPage,
+                                     text);
+
+  // 2) Remove the quote from the derived /highlights JSON and the fork's *_pages.json master so it does
+  //    not resurrect in the Quotes browser / next import. Title candidates mirror the import matching.
+  const std::vector<std::string> candidates =
+      HighlightPersistence::bookTitleCandidates(act.epub->getTitle(), act.epub->getPath());
+  HighlightPersistence::deleteHighlight(candidates, act.getCurrentChapterTitle(),
+                                        std::to_string(act.currentSpineIndex), text);
+
+  exit(act);
+  act.renderScreen(true);
+}
+
+void EpubAnnotationUi::drawDeletePopup(EpubActivity& act) {
+  const int sw = act.renderer.getScreenWidth();
+  const int sh = act.renderer.getScreenHeight();
+  deletePopupW_ = std::min(sw - 40, kDeletePopupW);
+  deletePopupH_ = kDeletePopupH;
+  deletePopupX_ = (sw - deletePopupW_) / 2;
+  deletePopupY_ = (sh - deletePopupH_) / 2;
+
+  // Paper card with a rounded ink outline (same visual language as QuotesActivity's confirm overlay).
+  act.renderer.rectangle.fill(deletePopupX_, deletePopupY_, deletePopupW_, deletePopupH_, false);
+  act.renderer.rectangle.render(deletePopupX_, deletePopupY_, deletePopupW_, deletePopupH_, true, true);
+
+  act.renderer.text.centered(kDeletePopupTitleFont, deletePopupY_ + 22, "Delete highlight?", true,
+                             EpdFontFamily::BOLD);
+
+  // Quote text snippet, up to two truncated lines.
+  std::string snippet = deleteText_;
+  const int textW = deletePopupW_ - 48;
+  int ty = deletePopupY_ + 52;
+  const int lh = act.renderer.text.getLineHeight(kDeletePopupFont);
+  for (int line = 0; line < 2 && !snippet.empty(); ++line) {
+    const std::string l = act.renderer.text.truncate(kDeletePopupFont, snippet.c_str(), textW);
+    if (l.empty()) break;
+    act.renderer.text.render(kDeletePopupFont, deletePopupX_ + 24, ty, l.c_str(), true);
+    ty += lh;
+    if (snippet.size() <= l.size()) {
+      snippet.clear();
+      break;
+    }
+    snippet = snippet.substr(l.size());
+  }
+
+  // Buttons: Cancel (outlined) / Delete (filled).
+  const int btnY = deletePopupY_ + deletePopupH_ - kDeletePopupBtnH - 22;
+  const int btnW = (deletePopupW_ - 24 * 2 - 12) / 2;
+  deleteNoX_ = deletePopupX_ + 24;
+  deleteNoY_ = btnY;
+  deleteNoW_ = btnW;
+  deleteNoH_ = kDeletePopupBtnH;
+  deleteYesX_ = deleteNoX_ + btnW + 12;
+  deleteYesY_ = btnY;
+  deleteYesW_ = btnW;
+  deleteYesH_ = kDeletePopupBtnH;
+
+  act.renderer.rectangle.fill(deleteNoX_, deleteNoY_, deleteNoW_, deleteNoH_, false, true);
+  act.renderer.rectangle.render(deleteNoX_, deleteNoY_, deleteNoW_, deleteNoH_, true, true);
+  act.renderer.rectangle.fill(deleteYesX_, deleteYesY_, deleteYesW_, deleteYesH_, true, true);
+  const int nlw = act.renderer.text.getWidth(kDeletePopupFont, "Cancel");
+  act.renderer.text.render(kDeletePopupFont, deleteNoX_ + (deleteNoW_ - nlw) / 2,
+                           deleteNoY_ + (deleteNoH_ - act.renderer.text.getLineHeight(kDeletePopupFont)) / 2, "Cancel",
+                           true);
+  const int ylw = act.renderer.text.getWidth(kDeletePopupFont, "Delete");
+  act.renderer.text.render(kDeletePopupFont, deleteYesX_ + (deleteYesW_ - ylw) / 2,
+                           deleteYesY_ + (deleteYesH_ - act.renderer.text.getLineHeight(kDeletePopupFont)) / 2,
+                           "Delete", false);
+}
+
+bool EpubAnnotationUi::handleTouchDrag(EpubActivity& act, const int x, const int y) {
+  if (!mode_ || !selectingStarted_ || words_.empty()) {
+    return false;
+  }
+  const size_t idx = wordIndexAt(x, y);
+  if (idx != SIZE_MAX && idx != focus_) {
+    focus_ = idx;
+    clampSelectionToValidWords();
+    repaint(act);
+  }
+  return true;
+}
+
+bool EpubAnnotationUi::handleTouchTap(EpubActivity& act, const int x, const int y) {
+  if (deletePopupActive_) {
+    if (x >= deleteYesX_ && x < deleteYesX_ + deleteYesW_ && y >= deleteYesY_ && y < deleteYesY_ + deleteYesH_) {
+      confirmDeleteHighlight(act);
+    } else if (x >= deleteNoX_ && x < deleteNoX_ + deleteNoW_ && y >= deleteNoY_ && y < deleteNoY_ + deleteNoH_) {
+      dismissDeletePopup(act);
+    } else if (x < deletePopupX_ || x >= deletePopupX_ + deletePopupW_ || y < deletePopupY_ ||
+               y >= deletePopupY_ + deletePopupH_) {
+      // Tap outside the popup dismisses it.
+      dismissDeletePopup(act);
+    }
+    return true;
+  }
+  if (!mode_) {
+    return false;
+  }
+  // Start a new selection at the tapped word, or commit the one in progress. Tapping while selecting
+  // finalizes it (drag-then-release and drag-then-tap both commit; matches the old T5S3 reader's
+  // tap-to-finalize instead of the confusing Start/Stop cycle).
+  if (!selectingStarted_) {
+    const size_t idx = wordIndexAt(x, y);
+    focus_ = (idx == SIZE_MAX) ? 0 : idx;
+    selectingStarted_ = true;
+    anchor_ = focus_;
+    act.updateRequired = true;
+    return true;
+  }
+  const size_t lo = std::min(anchor_, focus_);
+  const size_t hi = std::max(anchor_, focus_);
+  if (!words_.empty() && lo <= hi) {
+    pendingSpans_.push_back({lo, std::min(hi, words_.size() - 1)});
+  }
+  saveToStorage(act);  // pushes the span above and exits
+  return true;
 }
 
 void EpubAnnotationUi::moveFocusLine(const int delta) {
@@ -602,6 +887,14 @@ void EpubAnnotationUi::moveFocusLine(const int delta) {
 
 void EpubAnnotationUi::handleInput(EpubActivity& act) {
   const MappedInputManager& m = act.mappedInput;
+
+  if (deletePopupActive_) {
+    // Modal popup: Back cancels; all other buttons are ignored while it is up.
+    if (m.wasReleased(MappedInputManager::Button::Back)) {
+      dismissDeletePopup(act);
+    }
+    return;
+  }
 
   if (m.wasReleased(MappedInputManager::Button::Power)) {
     const unsigned long ht = m.getHeldTime();
@@ -695,6 +988,15 @@ void EpubAnnotationUi::saveToStorage(EpubActivity& act) {
     if (annotations_.appendHighlight(cachePath, act.epub->getSpineItemsCount(), neu, act.currentSpineIndex,
                                      act.section->currentPage)) {
       anyOk = true;
+      // Also persist into the T5S3 reader's /highlights/*.json quotes system so the
+      // home-screen latest-highlight banner and Quotes browser pick it up. Books without an
+      // OPF <dc:title> fall back to the sanitized file-name stem so the JSON is still written.
+      std::string bookTitle = act.epub->getTitle();
+      if (bookTitle.empty()) {
+        bookTitle = HighlightPersistence::defaultTitleForPath(act.epub->getPath());
+      }
+      HighlightPersistence::saveHighlight(bookTitle, act.epub->getPath(), act.getCurrentChapterTitle(), seg,
+                                          buildParagraphTextForRange(sp.first, sp.second));
     }
   }
 
@@ -705,7 +1007,6 @@ void EpubAnnotationUi::saveToStorage(EpubActivity& act) {
   }
 
   annotations_.ensurePageLoaded(cachePath, act.currentSpineIndex, act.section->currentPage);
-  clearWordIndexCache();
 
   act.readerPopup(spans.size() > 1 ? "Highlights saved" : "Highlight saved");
   exit(act);

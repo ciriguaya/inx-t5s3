@@ -7,6 +7,8 @@
 #include <utility>
 #include <vector>
 
+#include "../HighlightEntry.h"
+
 /** One highlight row (ANN3 on disk). */
 struct EpubAnnotationRecord {
   uint32_t timestamp = 0;
@@ -39,6 +41,11 @@ class EpubAnnotations {
   /** Deletes the ANN3 shard for this page and clears the in-memory cache when it matches. */
   void clearPageShard(const std::string& cachePath, int spine, int page);
 
+  /** Removes the record(s) whose stored text matches `text` from this page's shard (word-exact match
+   *  preferred, normalized-text match as fallback). Rewrites the shard, or deletes it when empty.
+   *  Returns true if at least one record was removed. */
+  bool removeHighlightOnPage(const std::string& cachePath, int spine, int page, const std::string& text);
+
   /** Whether the on-disk shard exists for this page (ground truth for saved highlights). */
   bool pageShardExists(const std::string& cachePath, int spine, int page) const;
 
@@ -54,6 +61,24 @@ class EpubAnnotations {
                                        int currentPage, const std::vector<PageWordHit>& annWords,
                                        std::vector<std::pair<size_t, size_t>>& outMerged);
 
+  /**
+   * Finds the current-pagination (spine, page) of a stored highlight phrase by scanning the book's
+   * ANN3 shards. `spineHint` >= 0 restricts the scan to that spine's shards (fast path for quotes
+   * whose stored chapter is the spine number); pass -1 to scan everything. Returns false when the
+   * phrase is not found anywhere.
+   */
+  static bool findQuoteLocation(const std::string& cachePath, const std::string& text, int spineHint,
+                                int* outSpine, int* outPage);
+
+  /**
+   * Searches a spine's cached pages (current pagination) for a stored phrase and returns the first
+   * page that contains it, or -1. Used to land on the exact quote page when no ANN3 shard exists yet
+   * (a fork quote on a spine that was never built).
+   */
+  static int findPageWithText(const std::string& cachePath, int spineIndex, int pageCount, GfxRenderer& renderer,
+                              int bodyFontId, int headerFontId, int marginLeft, int marginTop,
+                              const std::string& text);
+
   /** Called right after a spine's section file is freshly (re)built - e.g. a font/size/margin change
    *  repaginated it. A highlight's stored page number and word-index are both tied to one specific
    *  pagination; when that changes, the phrase can land on a different page entirely, not just a different
@@ -64,6 +89,16 @@ class EpubAnnotations {
   static void migrateSpineAnnotations(const std::string& cachePath, int spineIndex, int newPageCount,
                                       GfxRenderer& renderer, int bodyFontId, int headerFontId, int marginLeft,
                                       int marginTop);
+
+  /**
+   * Imports quotes saved by the T5S3 fork's /highlights system (quotes whose chapter field equals
+   * `spineIndex`) into this spine's ANN3 shards by re-locating each quote's phrase on the freshly
+   * built pages. Skips texts already present in this spine's shards, so re-opening a book never
+   * duplicates. This is what makes pre-existing CrossPoint highlights render in the book.
+   */
+  static void importQuoteHighlights(const std::string& cachePath, int spineIndex, int pageCount,
+                                    GfxRenderer& renderer, int bodyFontId, int headerFontId, int marginLeft,
+                                    int marginTop, const std::vector<HighlightEntry>& quotes);
 
  private:
   static bool tryAppendPreciseHighlightRanges(const EpubAnnotationRecord& r, int cs, int cp,

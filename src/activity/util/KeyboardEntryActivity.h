@@ -26,6 +26,11 @@
  *   3. Call onEnter() to start the activity
  *   4. Call loop() in your main loop
  *   5. When complete or cancelled, callbacks will be invoked
+ *
+ * T5S3 (touch-first) additions:
+ *   - The keyboard is split into a letters page and a numbers/symbols page; a "123"/"ABC" key on
+ *     the bottom row switches between them so each page can use large, touch-friendly keys.
+ *   - Tapping a key directly types it (onTouchTap).
  */
 class KeyboardEntryActivity : public Activity {
  public:
@@ -60,6 +65,7 @@ class KeyboardEntryActivity : public Activity {
   void onEnter() override;
   void onExit() override;
   void loop() override;
+  bool onTouchTap(int16_t x, int16_t y) override;
 
  private:
   std::string title;
@@ -75,20 +81,24 @@ class KeyboardEntryActivity : public Activity {
   int selectedCol = 0;
   bool shiftActive = false;
   bool capsLockActive = false;
+  bool symbolsPage = false;
 
   OnCompleteCallback onComplete;
   OnCancelCallback onCancel;
 
   static constexpr int NUM_ROWS = 5;
-  static constexpr int KEYS_PER_ROW = 13;
-  static const char* const keyboard[NUM_ROWS];
-  static const char* const keyboardShift[NUM_ROWS];
-
+  static constexpr int KEYS_PER_ROW = 10;
   static constexpr int SPECIAL_ROW = 4;
-  static constexpr int SHIFT_COL = 0;
-  static constexpr int SPACE_COL = 2;
-  static constexpr int BACKSPACE_COL = 7;
-  static constexpr int DONE_COL = 9;
+  static const char* const keyboard[NUM_ROWS];         // letters page
+  static const char* const keyboardShift[NUM_ROWS];    // letters page with shift/caps
+  static const char* const keyboardSymbols[NUM_ROWS];  // numbers + symbols page
+
+  /** Special-row slots (letters page). */
+  static constexpr int SLOT_TOGGLE = 0;
+  static constexpr int SLOT_SHIFT = 1;
+  static constexpr int SLOT_SPACE = 2;
+  static constexpr int SLOT_DEL = 3;
+  static constexpr int SLOT_OK = 4;
 
   static void taskTrampoline(void* param);
   [[noreturn]] void displayTaskLoop();
@@ -97,4 +107,9 @@ class KeyboardEntryActivity : public Activity {
   int getRowLength(int row) const;
   void render() const;
   void renderItemWithSelector(int x, int y, const char* item, bool isSelected) const;
+
+  /** Row/col at logical (x, y), or -1/-1 when outside the keyboard. */
+  bool keyAt(int x, int y, int& row, int& col) const;
+  /** Maps a special-row column to the fixed slot semantics (see SLOT_*). */
+  int specialSlotForCol(int col) const;
 };

@@ -418,3 +418,70 @@ void SleepImagePickerActivity::loop() {
     requestRedraw();
   }
 }
+
+bool SleepImagePickerActivity::onTouchTap(int16_t x, int16_t y) {
+  if (subActivity) {
+    return true;
+  }
+  const int pageWidth = renderer.getScreenWidth();
+  const int pageHeight = renderer.getScreenHeight();
+  const int buttonX = pageWidth - RANDOM_BUTTON_W - FOOTER_SIDE_PAD;
+  const int buttonY = pageHeight - 76;
+
+  // Random on/off button.
+  if (x >= buttonX && x < buttonX + RANDOM_BUTTON_W && y >= buttonY && y < buttonY + RANDOM_BUTTON_H) {
+    randomEnabled = !randomEnabled;
+    SETTINGS.setSleepCustomBmpFromInput(
+        randomEnabled ? "" : (rows.empty() ? "" : rows[static_cast<size_t>(selectedIndex)].value.c_str()));
+    SETTINGS.saveToFile();
+    renderedPageStart = -1;
+    freeGridBuffer();
+    requestRedraw();
+    return true;
+  }
+
+  if (rows.empty()) {
+    return true;
+  }
+  // Grid cell: tap selects the image and applies it immediately.
+  const int gridBottom = buttonY - 14;
+  const int gridHeight = std::max(1, gridBottom - GRID_TOP);
+  const int cellW = (pageWidth - GRID_MARGIN_X * 2 - GRID_GAP_X) / GRID_COLS;
+  const int cellH = (gridHeight - GRID_GAP_Y * (GRID_ROWS - 1)) / GRID_ROWS;
+  const int pageStart = pageStartForIndex(selectedIndex);
+  for (int slot = 0; slot < GRID_ITEMS; ++slot) {
+    const int col = slot % GRID_COLS;
+    const int gridRow = slot / GRID_COLS;
+    const int cellX = GRID_MARGIN_X + col * (cellW + GRID_GAP_X);
+    const int cellY = GRID_TOP + gridRow * (cellH + GRID_GAP_Y);
+    if (x >= cellX && x < cellX + cellW && y >= cellY && y < cellY + cellH) {
+      const int rowIndex = indexForSlot(pageStart, slot);
+      if (rowIndex >= 0 && rowIndex < static_cast<int>(rows.size())) {
+        selectedIndex = rowIndex;
+        randomEnabled = false;
+        applySelection();
+      }
+      return true;
+    }
+  }
+  return true;
+}
+
+bool SleepImagePickerActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)dx;
+  (void)endX;
+  (void)endY;
+  if (subActivity || rows.empty()) {
+    return true;
+  }
+  const int count = static_cast<int>(rows.size());
+  constexpr int kSwipeThreshold = 40;
+  if (dy <= -kSwipeThreshold) {
+    selectedIndex = std::min(selectedIndex + GRID_ITEMS, count - 1);
+    requestRedraw();
+  } else if (dy >= kSwipeThreshold) {
+    selectedIndex = std::max(selectedIndex - GRID_ITEMS, 0);
+    requestRedraw();
+  }
+  return true;
+}

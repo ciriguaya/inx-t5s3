@@ -104,6 +104,11 @@ class MenuDrawer {
    */
   void handleInput(MappedInputManager& input);
 
+  /** T5S3 touch: tap a row directly (no selection highlight). Returns true when consumed. */
+  bool handleTouchTap(int16_t x, int16_t y);
+  /** T5S3 touch: swipe scrolls the list / adjusts the percent view. Returns true when consumed. */
+  bool handleTouchSwipe(int16_t dx, int16_t dy);
+
   /**
    * @brief Sets the book title to display in the header
    * @param title Book title
@@ -224,6 +229,9 @@ class MenuDrawer {
 
   void exitPercent();
 
+  /** Activates the main-menu row at `index` (the Confirm action). */
+  void activateMainMenuRow(int index);
+
   void refreshBookmarkEntriesFromProvider();
 
   /**
@@ -276,6 +284,8 @@ class MenuDrawer {
   bool showingAnnotations = false;
   bool showingPercent = false;
   int percentValue_ = 0;
+  /** Raw TOC index of the current reading position (for the subtle "you are here" bold marker). */
+  int currentTocIndex_ = -1;
   bool isFromToc = false;
   int tocSelectedIndex = 0;
   int tocScrollOffset = 0;

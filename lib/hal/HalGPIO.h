@@ -2,28 +2,34 @@
 
 /**
  * @file HalGPIO.h
- * @brief Public interface and types for HalGPIO.
+ * @brief Public interface and types for HalGPIO (T5S3 backend).
+ *
+ * The interface is identical to Inx's X4/X3 HalGPIO so the application code
+ * compiles unchanged. Implementation drives the LilyGo T5S3: boot button
+ * (power), PCA9535 side button, GT911 touch, BQ27220 battery and PCF85063 RTC.
  */
 
 #include <Arduino.h>
 #include <BatteryMonitor.h>
 #include <InputManager.h>
 
-#define EPD_SCLK 8
-#define EPD_MOSI 10
-#define EPD_CS 21
-#define EPD_DC 4
-#define EPD_RST 5
+// E-paper pins (kept for interface compatibility; the T5S3 driver uses its own
+// fixed pins through M5GFX — see pin.hpp).
+#define EPD_SCLK 14
+#define EPD_MOSI 13
+#define EPD_CS 12
+#define EPD_DC 9
+#define EPD_RST 8
 #define EPD_BUSY 6
 
-#define SPI_MISO 7
+#define SPI_MISO 21
 
 #define BAT_GPIO0 0
 
 #define UART0_RXD 20
 
-#define X3_I2C_SDA 20
-#define X3_I2C_SCL 0
+#define X3_I2C_SDA 39
+#define X3_I2C_SCL 40
 #define X3_I2C_FREQ 400000
 
 #define I2C_ADDR_BQ27220 0x55
@@ -49,7 +55,7 @@ class HalGPIO {
 #endif
 
  public:
-  enum class DeviceType : uint8_t { X4, X3 };
+  enum class DeviceType : uint8_t { T5S3 };
 
   struct DateTime {
     uint16_t year = 0;
@@ -62,15 +68,9 @@ class HalGPIO {
   };
 
  private:
-  DeviceType deviceType = DeviceType::X4;
+  DeviceType deviceType = DeviceType::T5S3;
   mutable int batteryCachedPercent = 0;
   mutable unsigned long batteryLastPollMs = 0;
-  uint8_t motionSensorAddress = 0;
-  bool motionSensorInitialized = false;
-  bool motionGestureInProgress = false;
-  unsigned long motionLastPollMs = 0;
-  unsigned long motionSensorStartedMs = 0;
-  unsigned long motionLastGestureMs = 0;
 
  public:
   static constexpr unsigned long BATTERY_POLL_MS = 1500;
@@ -78,8 +78,10 @@ class HalGPIO {
 
   HalGPIO() = default;
 
-  bool deviceIsX3() const { return deviceType == DeviceType::X3; }
-  bool deviceIsX4() const { return deviceType == DeviceType::X4; }
+  bool deviceIsX3() const { return true; }   // Enables Inx's RTC/clock features (PCF85063 on T5S3).
+  bool deviceIsX4() const { return false; }
+  bool deviceIsT5S3() const { return true; }
+  const char* getDeviceName() const { return "T5S3"; }
 
   void begin();
 
@@ -101,6 +103,9 @@ class HalGPIO {
 
   void startDeepSleep();
 
+  /** Front-light/backlight brightness 0-10 (0 = off), applied to the T5S3 PWM output. */
+  void setBacklightLevel(uint8_t level);
+
   int getBatteryPercentage() const;
 
   bool isUsbConnected() const;
@@ -109,9 +114,26 @@ class HalGPIO {
   bool writeDateTime(const DateTime& dateTime) const;
   bool syncRtcFromSystemTime() const;
 
-  enum class WakeupReason { PowerButton, AfterFlash, AfterUSBPower, Other };
+  enum class WakeupReason { PowerButton, Touch, AfterFlash, AfterUSBPower, Other };
 
   WakeupReason getWakeupReason() const;
+
+  // ---- Touch (T5S3 GT911) ----
+  struct TouchPoint {
+    uint16_t x = 0;
+    uint16_t y = 0;
+  };
+
+  bool isTouchAvailable() const;
+  bool hadTouchActivity() const;
+  bool getTouchTap(TouchPoint& point) const;
+  bool getTouchHold(TouchPoint& point, unsigned long& heldMs) const;
+  bool getTouchPosition(TouchPoint& point) const;
+  bool getTouchSwipe(TouchPoint& start, TouchPoint& end) const;
+  bool wasTouchHomeButtonPressed() const;
+
+  /** Suppresses the tap synthesized when the currently held touch is released. */
+  void suppressTouchContact();
 
   static constexpr uint8_t BTN_BACK = 0;
   static constexpr uint8_t BTN_CONFIRM = 1;
@@ -120,6 +142,7 @@ class HalGPIO {
   static constexpr uint8_t BTN_UP = 4;
   static constexpr uint8_t BTN_DOWN = 5;
   static constexpr uint8_t BTN_POWER = 6;
+  static constexpr uint8_t BTN_PCA = 7;
 };
 
 extern HalGPIO gpio;

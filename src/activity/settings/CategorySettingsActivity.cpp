@@ -750,6 +750,155 @@ void CategorySettingsActivity::loop() {
   }
 }
 
+bool CategorySettingsActivity::onTouchTap(int16_t x, int16_t y) {
+  if (subActivity) {
+    return true;
+  }
+
+  if (selectorOpen) {
+    const int pageWidth = renderer.getScreenWidth();
+    const int pageHeight = renderer.getScreenHeight();
+    constexpr int rowHeight = UiTheme::DRAWER_LIST_ITEM_HEIGHT - 4;
+    const int headerHeight = INX_THEME.drawerHeaderHeight() - 4;
+    constexpr int visibleRows = 5;
+    const int rows = std::min(visibleRows, static_cast<int>(selectorOptions.size()));
+    const int panelW = std::min(pageWidth - 24, 360);
+    const int panelH = headerHeight + rows * rowHeight;
+    const int panelX = (pageWidth - panelW) / 2;
+    const int panelY = std::max(mainContentTop() + 8, (pageHeight - panelH) / 2);
+
+    if (x >= panelX && x < panelX + panelW && y >= panelY + headerHeight && y < panelY + panelH) {
+      const int slot = (y - panelY - headerHeight) / rowHeight;
+      const int optionIndex = selectorScrollOffset + slot;
+      if (optionIndex >= 0 && optionIndex < static_cast<int>(selectorOptions.size())) {
+        selectorSelectedIndex = optionIndex;
+        if (selectorSelectedIndex < selectorScrollOffset) {
+          selectorScrollOffset = selectorSelectedIndex;
+        } else if (selectorSelectedIndex >= selectorScrollOffset + visibleRows) {
+          selectorScrollOffset = selectorSelectedIndex - visibleRows + 1;
+        }
+        closeSelector(true);
+        updateRequired = true;
+        return true;
+      }
+    }
+    closeSelector(false);  // Tap outside the panel cancels.
+    return true;
+  }
+
+  if (handleTabBarTouchTap(renderer, x, y)) {
+    return true;
+  }
+
+  const int startY = mainContentTop() + mainHeaderHeight();
+  constexpr int itemHeight = UiTheme::DRAWER_LIST_ITEM_HEIGHT;
+  const int totalItems = static_cast<int>(menuItems.size());
+  int visibleCount = 0;
+  int index = -1;
+  for (int i = 0; i < itemsPerPage && (i + scrollOffset) < totalItems; ++i) {
+    const int candidate = i + scrollOffset;
+    const auto& entry = menuItems[static_cast<size_t>(candidate)];
+    if (entry.type == SettingType::SEPARATOR && (entry.name == nullptr || entry.name[0] == '\0')) {
+      continue;
+    }
+    const int itemY = startY + visibleCount * itemHeight;
+    if (y >= itemY && y < itemY + itemHeight) {
+      index = candidate;
+      break;
+    }
+    visibleCount++;
+  }
+
+  if (index >= 0) {
+    selectedIndex = index;
+    const int maxScroll = std::max(0, totalItems - itemsPerPage);
+    if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
+    if (selectedIndex >= scrollOffset + itemsPerPage) {
+      scrollOffset = std::min(selectedIndex - itemsPerPage + 1, maxScroll);
+    }
+    scrollOffset = std::max(0, std::min(scrollOffset, maxScroll));
+
+    const auto& selected = menuItems[static_cast<size_t>(index)];
+    if (selected.type == SettingType::SEPARATOR) {
+      toggleGroup(selected.group);
+      updateRequired = true;
+    } else if (selected.type == SettingType::ACTION) {
+      selected.change(0);
+      updateRequired = true;
+    } else if (selected.type == SettingType::ENUM || selected.type == SettingType::VALUE) {
+      openSelectorForSelected();
+    } else {
+      applyChange(1);
+      updateRequired = true;
+    }
+    return true;
+  }
+
+  return true;  // Header / gaps are inert; avoid accidental activation.
+}
+
+bool CategorySettingsActivity::onTouchSwipe(int16_t dx, int16_t dy, int16_t endX, int16_t endY) {
+  (void)endX;
+  (void)endY;
+  if (subActivity) {
+    return true;
+  }
+
+  constexpr int kSwipeThreshold = 40;
+  if (selectorOpen) {
+    if (dy <= -kSwipeThreshold) {
+      moveSelector(1);
+    } else if (dy >= kSwipeThreshold) {
+      moveSelector(-1);
+    } else if (dx <= -kSwipeThreshold) {
+      selectorPage(1);
+    } else if (dx >= kSwipeThreshold) {
+      selectorPage(-1);
+    }
+    return true;
+  }
+
+  if (dx <= -kSwipeThreshold) {
+    const int newTabIndex = (tabSelectorIndex + 1) % TAB_COUNT;
+    tabSelectorIndex = newTabIndex;
+    if (newTabIndex != 2) {
+      navigateToSelectedMenu();
+    } else {
+      updateRequired = true;
+    }
+    return true;
+  }
+  if (dx >= kSwipeThreshold) {
+    const int newTabIndex = (tabSelectorIndex - 1 + TAB_COUNT) % TAB_COUNT;
+    tabSelectorIndex = newTabIndex;
+    if (newTabIndex != 2) {
+      navigateToSelectedMenu();
+    } else {
+      updateRequired = true;
+    }
+    return true;
+  }
+
+  const int totalItems = static_cast<int>(menuItems.size());
+  if (totalItems > 0) {
+    if (dy <= -kSwipeThreshold) {
+      selectedIndex = (selectedIndex + 1) % totalItems;
+    } else if (dy >= kSwipeThreshold) {
+      selectedIndex = (selectedIndex - 1 + totalItems) % totalItems;
+    } else {
+      return true;
+    }
+    const int maxScroll = std::max(0, totalItems - itemsPerPage);
+    if (selectedIndex < scrollOffset) scrollOffset = selectedIndex;
+    if (selectedIndex >= scrollOffset + itemsPerPage) {
+      scrollOffset = std::min(selectedIndex - itemsPerPage + 1, maxScroll);
+    }
+    scrollOffset = std::max(0, std::min(scrollOffset, maxScroll));
+    updateRequired = true;
+  }
+  return true;
+}
+
 /**
  * @brief Display task loop for periodic rendering
  */

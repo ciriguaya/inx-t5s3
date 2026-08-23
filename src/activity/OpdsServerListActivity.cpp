@@ -76,6 +76,22 @@ void OpdsServerListActivity::loop() {
   }
 }
 
+bool OpdsServerListActivity::onTouchTap(int16_t x, int16_t y) {
+  (void)x;
+  const auto& servers = OPDS_STORE.getAllServers();
+  if (servers.empty()) {
+    return true;
+  }
+  const int listTop = INX_THEME.drawerPageHeaderHeight();
+  const int row = (y - listTop) / kListItemHeight;
+  if (row < 0 || row >= static_cast<int>(servers.size())) {
+    return true;
+  }
+  selectedIndex = row;
+  handleSelection();
+  return true;
+}
+
 /** Enters the book browser subactivity for the currently selected server. */
 void OpdsServerListActivity::handleSelection() {
   const auto& servers = OPDS_STORE.getAllServers();

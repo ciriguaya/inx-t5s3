@@ -1,10 +1,27 @@
 #pragma once
 #include <Arduino.h>
-#include <SPI.h>
+
+// ---------------------------------------------------------------------------
+// EInkDisplay — T5S3 backend
+//
+// This is a drop-in replacement for the open-x4-sdk EInkDisplay used by Inx on
+// the Xteink X4/X3. It keeps the exact same public interface so Inx's
+// lib/hal/HalDisplay and lib/GfxRenderer compile unchanged, but drives the
+// LilyGo T5S3 (ESP32-S3) ED047TC1 e-paper panel through M5GFX instead of the
+// X4's controller.
+//
+// Framebuffer geometry follows the T5S3's physical scan orientation:
+//   DISPLAY_WIDTH  = 960 (physical panel columns, one bit per pixel)
+//   DISPLAY_HEIGHT = 540 (physical panel rows)
+// Inx's GfxRenderer defaults to Portrait, which maps logical (540x960)
+// portrait coordinates onto this physical framebuffer — the native T5S3
+// reading orientation.
+// ---------------------------------------------------------------------------
 
 class EInkDisplay {
  public:
-  // Constructor with pin configuration
+  // Constructor with pin configuration (kept for interface compatibility;
+  // the T5S3 uses its own fixed pins via M5GFX).
   EInkDisplay(int8_t sclk, int8_t mosi, int8_t cs, int8_t dc, int8_t rst, int8_t busy);
 
   // Destructor
@@ -13,34 +30,34 @@ class EInkDisplay {
   // Refresh modes (guarded to avoid redefinition in test builds)
   enum RefreshMode {
     FULL_REFRESH,  // Full refresh with complete waveform
-    HALF_REFRESH,  // Half refresh (1720ms) - balanced quality and speed
-    FAST_REFRESH,  // Fast refresh using custom LUT
+    HALF_REFRESH,  // Half refresh - balanced quality and speed
+    FAST_REFRESH,  // Fast refresh (typical page turn)
     STRONG_FAST_REFRESH
   };
 
-  // Set X3 panel geometry and mode (must be called before begin())
+  // Set X3 panel geometry and mode (must be called before begin()). No-op on T5S3.
   void setDisplayX3();
 
   // Initialize the display hardware and driver
   void begin();
 
-  // Legacy compile-time dimensions kept for compatibility.
-  static constexpr uint16_t DISPLAY_WIDTH = 800;
-  static constexpr uint16_t DISPLAY_HEIGHT = 480;
+  // Compile-time dimensions (T5S3 physical scan orientation).
+  static constexpr uint16_t DISPLAY_WIDTH = 960;
+  static constexpr uint16_t DISPLAY_HEIGHT = 540;
   static constexpr uint16_t DISPLAY_WIDTH_BYTES = DISPLAY_WIDTH / 8;
   static constexpr uint32_t BUFFER_SIZE = DISPLAY_WIDTH_BYTES * DISPLAY_HEIGHT;
   static constexpr uint16_t X3_DISPLAY_WIDTH = 792;
   static constexpr uint16_t X3_DISPLAY_HEIGHT = 528;
   static constexpr uint16_t X3_DISPLAY_WIDTH_BYTES = X3_DISPLAY_WIDTH / 8;
   static constexpr uint32_t X3_BUFFER_SIZE = X3_DISPLAY_WIDTH_BYTES * X3_DISPLAY_HEIGHT;
-  static constexpr uint32_t MAX_BUFFER_SIZE = 52272;  // max(800x480, 792x528) / 8
+  static constexpr uint32_t MAX_BUFFER_SIZE = BUFFER_SIZE;
 
   // Runtime dimensions
   uint16_t getDisplayWidth() const { return displayWidth; }
   uint16_t getDisplayHeight() const { return displayHeight; }
   uint16_t getDisplayWidthBytes() const { return displayWidthBytes; }
   uint32_t getBufferSize() const { return bufferSize; }
-  bool isX3() const { return _x3Mode; }
+  bool isX3() const { return false; }
 
   // Frame buffer operations
   void clearScreen(uint8_t color = 0xFF) const;
@@ -61,24 +78,24 @@ class EInkDisplay {
 #endif
 
   void displayBuffer(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
-  // EXPERIMENTAL: Windowed update - display only a rectangular region
+  // Windowed update - display only a rectangular region (implemented as full-frame push).
   void displayWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, bool turnOffScreen = false);
   void displayGrayBuffer(bool turnOffScreen = false, const unsigned char* lutData = nullptr, bool quality = false,
                          bool trackForRevert = true);
   void displayGrayBufferFastQuality(bool turnOffScreen = false);
   void prepareQualityGrayscale();
-  // Quality grayscale restricted to a pixel rectangle (only those pixels are driven; rest of screen preserved).
+  // Quality grayscale restricted to a pixel rectangle (implemented as full-frame push).
   void displayGrayBufferWindow(uint16_t x, uint16_t y, uint16_t w, uint16_t h, const unsigned char* lutData = nullptr);
 
   void refreshDisplay(RefreshMode mode = FAST_REFRESH, bool turnOffScreen = false);
 
-  // Hint the X3 policy to run a one-shot full resync on next update.
+  // Hint to run a one-shot full resync on next update.
   void requestResync();
 
   // debug function
   void grayscaleRevert();
 
-  // LUT control
+  // LUT control (hardware-independent on T5S3; kept as no-ops)
   void setCustomLUT(bool enabled, const unsigned char* lutData = nullptr);
 
   // Power management
@@ -87,14 +104,14 @@ class EInkDisplay {
   // Access to frame buffer
   uint8_t* getFrameBuffer() const { return frameBuffer; }
 
-  // Save the current framebuffer to a PBM file (desktop/test builds only)
+  // Save the current framebuffer to a PBM file (desktop/test builds only; no-op on device)
   void saveFrameBufferAsPBM(const char* filename);
 
  private:
-  // Internal geometry setter used by setDisplayX3().
+  // Internal geometry setter kept for interface compatibility.
   void setDisplayDimensions(uint16_t width, uint16_t height);
 
-  // Pin configuration
+  // Pin configuration (unused on T5S3; kept for interface compatibility)
   int8_t _sclk, _mosi, _cs, _dc, _rst, _busy;
 
   // Runtime display geometry
@@ -102,46 +119,40 @@ class EInkDisplay {
   uint16_t displayHeight = DISPLAY_HEIGHT;
   uint16_t displayWidthBytes = DISPLAY_WIDTH_BYTES;
   uint32_t bufferSize = BUFFER_SIZE;
-  bool _x3Mode = false;
-  bool _x3RedRamSynced = false;
-  struct X3GrayState {
-    bool lastBaseWasPartial = false;
-    bool lsbValid = false;
-  };
-  X3GrayState _x3GrayState;
-  uint8_t _x3InitialFullSyncsRemaining = 0;
-  bool _x3ForceFullSyncNext = false;
-  // Frame buffer storage is allocated exactly for the active device during begin().
+
+  // Frame buffer storage
   uint8_t* frameBuffer0 = nullptr;
   uint8_t* frameBuffer;
-#ifndef EINK_DISPLAY_SINGLE_BUFFER_MODE
-  uint8_t* frameBuffer1 = nullptr;
-  uint8_t* frameBufferActive;
-#endif
-  uint32_t allocatedBufferSize = 0;
 
-  // SPI settings
-  SPISettings spiSettings;
+  // Grayscale planes for 2-bit rendering
+  uint8_t* grayscaleLsbBuffer = nullptr;
+  uint8_t* grayscaleMsbBuffer = nullptr;
+  uint8_t* grayscaleBaseBuffer = nullptr;
+  bool grayscaleBaseCaptured = false;
+
+  uint32_t allocatedBufferSize = 0;
 
   // State
   bool isScreenOn = false;
   bool customLutActive = false;
   bool inGrayscaleMode = false;
   bool drawGrayscale = false;
+  bool displayReady = false;
+  bool forceFullRefresh = true;
+  bool resyncRequested = false;
+  uint32_t refreshCycleCount = 0;
 
-  // Low-level display control
-  void resetDisplay();
-  void sendCommand(uint8_t command);
-  void sendData(uint8_t data);
-  void sendData(const uint8_t* data, uint16_t length);
-  void waitForRefresh(const char* comment = nullptr);
-  void waitWhileBusy(const char* comment = nullptr);
-  void initDisplayController();
+  // M5GFX backend (defined in the .cpp)
+  class M5GfxBackend;
+  M5GfxBackend* backend = nullptr;
 
-  // Low-level display operations
-  void setRamArea(uint16_t x, uint16_t y, uint16_t w, uint16_t h);
-  void writeRamBuffer(uint8_t ramBuffer, const uint8_t* data, uint32_t size);
+  uint8_t* allocatePlane();
+  void releaseBackend();
+  void renderBwToPanelCanvas() const;
+  void renderGrayToPanelCanvas() const;
+  void pushPanelCanvas(RefreshMode mode);
 };
 
+// Kept for interface compatibility (X4 LUTs; unused by the T5S3 backend).
 extern const unsigned char lut_x4_quality[];
 extern const unsigned char lut_x4_quality_fast[];
