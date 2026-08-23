@@ -4,7 +4,7 @@
 
 > **Status: work in progress.** This fork is quite reliable for daily reading, but it is **not fully polished** — expect rough edges here and there. Feedback and bug reports are very welcome: open an issue or a pull request on this repository.
 
-**This tree is a port of [Inx](https://github.com/obijuankenobiii/inx) to the LilyGo T5 ePaper S3 (T5S3) 4.7-inch reader, built on the T5S3 hardware layer and highlight/quotes system of the [myT5S3-Reader](https://github.com/) fork of the [T5S3-Reader](https://github.com/ShallowGreen123/T5S3-Reader) project (itself adapted from [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader)).**
+**This tree is a port of [Inx](https://github.com/obijuankenobiii/inx) to the LilyGo T5 ePaper S3 (T5S3) 4.7-inch reader, built on the T5S3 hardware layer and highlight/quotes system of the [myT5S3-Reader](https://github.com/ciriguaya/myT5S3-Reader) fork of the [T5S3-Reader](https://github.com/ShallowGreen123/T5S3-Reader) project (itself adapted from [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader)).**
 
 The T5S3 is an ESP32-S3 device with a 960×540 (logical 540×960 portrait) ED047TC1 e-paper panel, GT911 touch, BQ27220/BQ25896 battery management, a PCF85063 RTC, and two physical buttons (boot button + PCA9535 side button). Inx targets the Xteink X4/X3 (ESP32-C3) instead, so this port replaces Inx's open-x4-sdk hardware layer with a T5S3 backend while keeping the entire Inx application code (UI, reader, settings, sync, web interface) unchanged.
 
@@ -16,7 +16,7 @@ This is a **derivative work** of three MIT-licensed upstream projects:
 |---|---|---|
 | [Inx](https://github.com/obijuankenobiii/inx) | Dave Allie | **Base of this port** — the whole application layer (UI, reader, settings, sync, web interface, simulator) is Inx with the hardware layer swapped. |
 | [CrossPoint Reader](https://github.com/crosspoint-reader/crosspoint-reader) | Dave Allie | Upstream of the T5S3 fork; the **e-paper driver approach (M5GFX), battery/charger/RTC handling and touch pipeline** trace back through it. |
-| [T5S3-Reader](https://github.com/ShallowGreen123/T5S3-Reader) / **myT5S3-Reader** | ShallowGreen123 (T5S3 adaptation) + this project's companion fork | The T5S3 **hardware backend** (`lib/Board_T5S3`, `lib/bq25896`, `lib/bq27220`, `lib/I2CMasterCompat`, `lib/hal`) and the **highlight & quotes system** (`/highlights/*.json`, `*_pages.json`, in-book highlight rendering) are ported from here. |
+| [T5S3-Reader](https://github.com/ShallowGreen123/T5S3-Reader) / **[myT5S3-Reader](https://github.com/ciriguaya/myT5S3-Reader)** | ShallowGreen123 (T5S3 adaptation) + this project's companion fork | The T5S3 **hardware backend** (`lib/Board_T5S3`, `lib/bq25896`, `lib/bq27220`, `lib/I2CMasterCompat`, `lib/hal`) and the **highlight & quotes system** (`/highlights/*.json`, `*_pages.json`, in-book highlight rendering) are ported from here. |
 
 **License: MIT** (see [`LICENSE`](LICENSE)). The original copyright notice (© 2025 Dave Allie) is preserved in `LICENSE` as required by the MIT terms of the upstream projects; keep it and this attribution when redistributing or modifying this firmware. Third-party libraries used (M5GFX, ArduinoJson, SdFat, Expat, miniz, toojpeg, WebSockets, …) carry their own MIT/BSD-style licenses in their upstream repositories.
 
