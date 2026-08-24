@@ -58,6 +58,8 @@ class QuotesActivity final : public Activity {
   std::string currentAuthor;
   std::string currentLocation;
   int metadataForIndex = -1;
+  /** Cached page text (book-page context) for the quote at metadataForIndex; empty when unavailable. */
+  std::string quotePageText;
 
   void loadAllQuotes();
   void clampIndex();

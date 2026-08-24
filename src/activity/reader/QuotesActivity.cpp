@@ -12,6 +12,8 @@
 #include <cstdlib>
 
 #include "Epub/BookMetadataCache.h"
+#include "Epub/Page.h"
+#include "Epub/Section.h"
 #include "HighlightPersistence.h"
 #include "Epub/EpubAnnotations.h"
 #include "state/PendingQuoteJump.h"
@@ -27,6 +29,46 @@ constexpr int kFontQuote = ATKINSON_HYPERLEGIBLE_14_FONT_ID;
 constexpr int kFontBody = ATKINSON_HYPERLEGIBLE_12_FONT_ID;
 constexpr int kFontSmall = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
 constexpr int kFontTitle = ATKINSON_HYPERLEGIBLE_16_FONT_ID;
+
+/** Collapses whitespace runs to single spaces (no lowercasing - keeps the original text for display). */
+std::string collapseWs(const std::string& text) {
+  std::string out;
+  bool pendingSpace = false;
+  for (const char c : text) {
+    if (std::isspace(static_cast<unsigned char>(c))) {
+      pendingSpace = !out.empty();
+    } else {
+      if (pendingSpace) {
+        out += ' ';
+        pendingSpace = false;
+      }
+      out += c;
+    }
+  }
+  return out;
+}
+
+/** Case-insensitive substring search. Returns std::string::npos when not found. */
+size_t ciFind(const std::string& hay, const std::string& needle) {
+  if (needle.empty()) {
+    return 0;
+  }
+  if (needle.size() > hay.size()) {
+    return std::string::npos;
+  }
+  for (size_t i = 0; i + needle.size() <= hay.size(); ++i) {
+    size_t j = 0;
+    while (j < needle.size() &&
+           std::tolower(static_cast<unsigned char>(hay[i + j])) ==
+               std::tolower(static_cast<unsigned char>(needle[j]))) {
+      ++j;
+    }
+    if (j == needle.size()) {
+      return i;
+    }
+  }
+  return std::string::npos;
+}
 }  // namespace
 
 void QuotesActivity::loadAllQuotes() {
@@ -55,6 +97,7 @@ void QuotesActivity::refreshCurrentMetadata() {
   metadataForIndex = currentIndex;
   currentAuthor.clear();
   currentLocation.clear();
+  quotePageText.clear();
   if (quotes.empty() || currentIndex < 0 || currentIndex >= static_cast<int>(quotes.size())) {
     return;
   }
@@ -91,6 +134,12 @@ void QuotesActivity::refreshCurrentMetadata() {
   int page = 0;
   const int spineHint = numericChapter && !entry.chapter.empty() ? std::atoi(entry.chapter.c_str()) : -1;
   if (EpubAnnotations::findQuoteLocation(cachePath, entry.selectedText, spineHint, &spine, &page) && spine >= 0) {
+    // Book-page context: the cached page the quote lives on, so the quote is shown in context
+    // (the Inx "book page highlight" look) instead of as an isolated snippet.
+    std::unique_ptr<Page> cached = Section::loadCachedPage(cachePath, spine, page);
+    if (cached) {
+      quotePageText = cached->extractPlainText(2000);
+    }
     char pageBuf[16];
     snprintf(pageBuf, sizeof(pageBuf), "p. %d", page + 1);
     currentLocation = chapterLabel.empty() ? pageBuf : chapterLabel + " \xC2\xB7 " + pageBuf;
@@ -147,7 +196,8 @@ void QuotesActivity::render() {
 
   const int textW = screenW - 48;
 
-  // Book header (Inx export-card cues: bold title, byline, chapter · page, divider).
+  // Book header (Inx export-card cues: bold title + byline; chapter · page goes into the
+  // page-card footer, like Inx's book-page highlight cards).
   int y = bodyTop;
   const std::string title = renderer.text.truncate(kFontTitle, entry.bookTitle.c_str(), textW);
   renderer.text.render(kFontTitle, 24, y, title.c_str(), true, EpdFontFamily::BOLD);
@@ -157,53 +207,125 @@ void QuotesActivity::render() {
     renderer.text.render(kFontBody, 24, y, byline.c_str(), true);
     y += renderer.text.getLineHeight(kFontBody) + 2;
   }
-  if (!currentLocation.empty()) {
-    std::string loc = renderer.text.truncate(kFontSmall, currentLocation.c_str(), textW);
-    renderer.text.render(kFontSmall, 24, y, loc.c_str(), true);
-    y += renderer.text.getLineHeight(kFontSmall) + 2;
-  }
   const int dividerY = y + 6;
   renderer.line.render(24, dividerY, screenW - 24, dividerY, true);
 
-  // Quote card: outlined with a left ink accent bar (highlighter look). The card hugs its
-  // content (like the Inx export cards) instead of filling the whole body.
+  // ---- Book-page highlight card (Inx "book page" style) ----
+  // The quote is shown in the context of the book page (cached page text, or the stored
+  // paragraph as a fallback) with the quoted span marked by a lattice band, plus the
+  // chapter · page footer - so the quote reads like a real highlighted page passage.
   const int btnY = screenH - kBtnBottomInset - kBtnH;
   const int cardX = 24;
   const int cardW = screenW - 48;
   const int cardTop = dividerY + 14;
   const int cardBottom = btnY - 18;
-  const int textLeft = cardX + 22;
-  const int quoteW = cardW - 44;
+  const int cardH = cardBottom - cardTop;
 
-  std::vector<std::string> quoteLines;
-  std::string quoteText = entry.selectedText;
-  while (!quoteText.empty() && quoteLines.size() < 8) {
-    const std::string line = renderer.text.truncate(kFontQuote, quoteText.c_str(), quoteW);
-    if (line.empty()) break;
-    quoteLines.push_back(line);
-    if (quoteText.size() <= line.size()) {
-      quoteText.clear();
-      break;
+  renderer.rectangle.fill(cardX, cardTop, cardW, cardH, false);
+  renderer.rectangle.render(cardX, cardTop, cardW, cardH, true);
+
+  // Book-page margin line.
+  const int marginX = cardX + 14;
+  renderer.line.render(marginX, cardTop + 8, marginX, cardBottom - 8, true);
+
+  const int pageFont = kFontSmall;
+  const int textX = marginX + 10;
+  const int pageTextW = cardX + cardW - textX - 16;
+  const int lineH = renderer.text.getLineHeight(pageFont);
+  const int footerH = currentLocation.empty() ? 12 : lineH + 14;
+  const int bodyTopY = cardTop + 10;
+  const int bodyBottomY = cardBottom - footerH;
+
+  // Body text: prefer the cached page context, fall back to the stored paragraph, then the
+  // quote itself. Find the quoted span (case-insensitive, whitespace-collapsed).
+  std::string body;
+  size_t qpos = std::string::npos;
+  const std::string qn = collapseWs(entry.selectedText);
+  auto tryCandidate = [&](const std::string& cand) {
+    if (cand.empty()) {
+      return false;
     }
-    quoteText = quoteText.substr(line.size());
+    const std::string norm = collapseWs(cand);
+    const size_t p = ciFind(norm, qn);
+    if (p != std::string::npos) {
+      body = norm;
+      qpos = p;
+      return true;
+    }
+    return false;
+  };
+  if (!tryCandidate(quotePageText) && !tryCandidate(entry.paragraphText)) {
+    body = qn.empty() ? entry.selectedText : qn;
+    qpos = 0;
   }
-  const bool more = !quoteText.empty();
-  const int quoteLineH = renderer.text.getLineHeight(kFontQuote);
-  const int moreH = more ? renderer.text.getLineHeight(kFontSmall) + 6 : 0;
-  const int textBlockH = static_cast<int>(quoteLines.size()) * quoteLineH + moreH;
-  const int cardH = std::max(64, std::min(textBlockH + 30, cardBottom - cardTop));
-
-  renderer.rectangle.fill(cardX, cardTop, cardW, cardH, false, true);
-  renderer.rectangle.render(cardX, cardTop, cardW, cardH, true, true);
-  renderer.rectangle.fill(cardX, cardTop + 12, 4, std::max(10, cardH - 24), true);
-
-  int ty = cardTop + 14;
-  for (const std::string& line : quoteLines) {
-    renderer.text.render(kFontQuote, textLeft, ty, line.c_str(), true);
-    ty += quoteLineH;
+  if (body.empty()) {
+    body = "\xC2\xB7 \xC2\xB7 \xC2\xB7";
   }
-  if (more && ty + renderer.text.getLineHeight(kFontSmall) <= cardTop + cardH - 8) {
-    renderer.text.render(kFontSmall, textLeft, ty + 2, "\xC2\xB7 \xC2\xB7 \xC2\xB7", true);
+
+  // Word-wrap the whole body (offset per line into `body`), then window it around the quote
+  // line so the highlighted span is always visible with a little context above it.
+  std::vector<std::pair<std::string, size_t>> allLines;
+  {
+    size_t i = 0;
+    const size_t n = body.size();
+    while (i < n) {
+      const size_t lineStart = i;
+      std::string line;
+      while (i < n) {
+        size_t we = i;
+        while (we < n && body[we] != ' ') {
+          ++we;
+        }
+        const std::string word = body.substr(i, we - i);
+        const std::string cand = line.empty() ? word : line + " " + word;
+        if (renderer.text.getWidth(pageFont, cand.c_str()) <= pageTextW || line.empty()) {
+          line = cand;
+          i = (we < n) ? we + 1 : we;
+        } else {
+          break;
+        }
+      }
+      allLines.emplace_back(line, lineStart);
+    }
+  }
+
+  int quoteLine = 0;
+  for (size_t li = 0; li < allLines.size(); ++li) {
+    if (qpos >= allLines[li].second) {
+      quoteLine = static_cast<int>(li);
+    }
+  }
+  const int capacity = std::max(3, (bodyBottomY - bodyTopY) / lineH);
+  int windowStart = std::max(0, quoteLine - 1);  // one context line above the quote
+  const int windowEnd = std::min(static_cast<int>(allLines.size()), windowStart + capacity);
+  if (quoteLine >= windowEnd) {
+    windowStart = std::max(0, quoteLine - capacity + 1);
+  }
+
+  int ty = bodyTopY;
+  const int textAlignPad = 2;
+  for (int li = windowStart; li < windowEnd && ty + lineH <= bodyBottomY; ++li, ty += lineH) {
+    const std::string& line = allLines[static_cast<size_t>(li)].first;
+    const size_t lineStart = allLines[static_cast<size_t>(li)].second;
+    const size_t lineEnd = lineStart + line.size();
+    const size_t bs = std::max(qpos, lineStart);
+    const size_t be = std::min(qpos + qn.size(), lineEnd);
+    if (bs < be) {
+      const std::string prefix = line.substr(0, bs - lineStart);
+      const std::string span = line.substr(bs - lineStart, be - bs);
+      const int bandX = textX + renderer.text.getWidth(pageFont, prefix.c_str());
+      const int bandW = renderer.text.getWidth(pageFont, span.c_str()) + textAlignPad;
+      // Two offset lattice passes = the same ~50% checkerboard band as the in-book highlight.
+      renderer.ui.fillSparseInkLatticeInRect(bandX - 1, ty - 1, bandW, lineH + 2, 2);
+      renderer.ui.fillSparseInkLatticeInRect(bandX, ty, bandW, lineH + 1, 2);
+    }
+    renderer.text.render(pageFont, textX, ty, line.c_str(), true);
+  }
+
+  // Chapter · page footer inside the page card (Inx's book-page footer).
+  if (!currentLocation.empty()) {
+    const std::string footer = renderer.text.truncate(kFontSmall, currentLocation.c_str(), pageTextW);
+    renderer.text.render(kFontSmall, textX, cardBottom - lineH - 6, footer.c_str(), true);
   }
 
   // Bottom button row.
