@@ -54,9 +54,15 @@ class QuotesActivity final : public Activity {
 
   bool updateRequired = true;
 
+  /** Cached display metadata (author, chapter · page label) for the quote at metadataForIndex. */
+  std::string currentAuthor;
+  std::string currentLocation;
+  int metadataForIndex = -1;
+
   void loadAllQuotes();
   void clampIndex();
   void navigate(int delta);
+  void refreshCurrentMetadata();
   void render();
   void renderConfirmOverlay();
   void requestDelete();

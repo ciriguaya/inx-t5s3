@@ -11,6 +11,7 @@
 #include <cctype>
 #include <cstdlib>
 
+#include "Epub/BookMetadataCache.h"
 #include "HighlightPersistence.h"
 #include "Epub/EpubAnnotations.h"
 #include "state/PendingQuoteJump.h"
@@ -25,6 +26,7 @@ constexpr int kBtnBottomInset = 26;
 constexpr int kFontQuote = ATKINSON_HYPERLEGIBLE_14_FONT_ID;
 constexpr int kFontBody = ATKINSON_HYPERLEGIBLE_12_FONT_ID;
 constexpr int kFontSmall = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
+constexpr int kFontTitle = ATKINSON_HYPERLEGIBLE_16_FONT_ID;
 }  // namespace
 
 void QuotesActivity::loadAllQuotes() {
@@ -33,6 +35,7 @@ void QuotesActivity::loadAllQuotes() {
   std::sort(quotes.begin(), quotes.end(),
             [](const HighlightEntry& a, const HighlightEntry& b) { return a.sequence > b.sequence; });
   clampIndex();
+  refreshCurrentMetadata();
   updateRequired = true;
 }
 
@@ -43,6 +46,57 @@ void QuotesActivity::clampIndex() {
   }
   if (currentIndex < 0) currentIndex = 0;
   if (currentIndex >= static_cast<int>(quotes.size())) currentIndex = static_cast<int>(quotes.size()) - 1;
+}
+
+void QuotesActivity::refreshCurrentMetadata() {
+  if (metadataForIndex == currentIndex) {
+    return;
+  }
+  metadataForIndex = currentIndex;
+  currentAuthor.clear();
+  currentLocation.clear();
+  if (quotes.empty() || currentIndex < 0 || currentIndex >= static_cast<int>(quotes.size())) {
+    return;
+  }
+  const HighlightEntry& entry = quotes[static_cast<size_t>(currentIndex)];
+  if (entry.bookPath.empty()) {
+    return;
+  }
+
+  const std::string cachePath =
+      "/.metadata/epub/" + std::to_string(std::hash<std::string>{}(entry.bookPath));
+
+  // Author from the book's cached metadata (when the book was opened on this firmware).
+  BookMetadataCache metadata(cachePath);
+  if (metadata.load()) {
+    currentAuthor = metadata.coreMetadata.author;
+  }
+
+  // Chapter/page label: reuse the ANN3 relocation used by Open. Numeric chapters (fork-master
+  // quotes) read as "Chapter N"; derived quotes keep their stored chapter title.
+  bool numericChapter = !entry.chapter.empty();
+  for (const char c : entry.chapter) {
+    if (!std::isdigit(static_cast<unsigned char>(c))) {
+      numericChapter = false;
+      break;
+    }
+  }
+  std::string chapterLabel;
+  if (numericChapter) {
+    chapterLabel = "Chapter " + entry.chapter;
+  } else if (!entry.chapter.empty() && entry.chapter != "0") {
+    chapterLabel = entry.chapter;
+  }
+  int spine = -1;
+  int page = 0;
+  const int spineHint = numericChapter && !entry.chapter.empty() ? std::atoi(entry.chapter.c_str()) : -1;
+  if (EpubAnnotations::findQuoteLocation(cachePath, entry.selectedText, spineHint, &spine, &page) && spine >= 0) {
+    char pageBuf[16];
+    snprintf(pageBuf, sizeof(pageBuf), "p. %d", page + 1);
+    currentLocation = chapterLabel.empty() ? pageBuf : chapterLabel + " \xC2\xB7 " + pageBuf;
+  } else {
+    currentLocation = chapterLabel;
+  }
 }
 
 void QuotesActivity::onEnter() {
@@ -91,34 +145,68 @@ void QuotesActivity::render() {
 
   const HighlightEntry& entry = *current();
 
-  // Quote text.
-  const int textTop = bodyTop + 16;
   const int textW = screenW - 48;
-  int y = textTop;
+
+  // Book header (Inx export-card cues: bold title, byline, chapter · page, divider).
+  int y = bodyTop;
+  const std::string title = renderer.text.truncate(kFontTitle, entry.bookTitle.c_str(), textW);
+  renderer.text.render(kFontTitle, 24, y, title.c_str(), true, EpdFontFamily::BOLD);
+  y += renderer.text.getLineHeight(kFontTitle);
+  if (!currentAuthor.empty()) {
+    std::string byline = renderer.text.truncate(kFontBody, ("by " + currentAuthor).c_str(), textW);
+    renderer.text.render(kFontBody, 24, y, byline.c_str(), true);
+    y += renderer.text.getLineHeight(kFontBody) + 2;
+  }
+  if (!currentLocation.empty()) {
+    std::string loc = renderer.text.truncate(kFontSmall, currentLocation.c_str(), textW);
+    renderer.text.render(kFontSmall, 24, y, loc.c_str(), true);
+    y += renderer.text.getLineHeight(kFontSmall) + 2;
+  }
+  const int dividerY = y + 6;
+  renderer.line.render(24, dividerY, screenW - 24, dividerY, true);
+
+  // Quote card: outlined with a left ink accent bar (highlighter look). The card hugs its
+  // content (like the Inx export cards) instead of filling the whole body.
+  const int btnY = screenH - kBtnBottomInset - kBtnH;
+  const int cardX = 24;
+  const int cardW = screenW - 48;
+  const int cardTop = dividerY + 14;
+  const int cardBottom = btnY - 18;
+  const int textLeft = cardX + 22;
+  const int quoteW = cardW - 44;
+
+  std::vector<std::string> quoteLines;
   std::string quoteText = entry.selectedText;
-  while (!quoteText.empty() && y < screenH - 320) {
-    const std::string line = renderer.text.truncate(kFontQuote, quoteText.c_str(), textW);
+  while (!quoteText.empty() && quoteLines.size() < 8) {
+    const std::string line = renderer.text.truncate(kFontQuote, quoteText.c_str(), quoteW);
     if (line.empty()) break;
-    renderer.text.render(kFontQuote, 24, y, line.c_str(), true);
-    y += renderer.text.getLineHeight(kFontQuote);
-    if (quoteText.size() <= line.size()) break;
+    quoteLines.push_back(line);
+    if (quoteText.size() <= line.size()) {
+      quoteText.clear();
+      break;
+    }
     quoteText = quoteText.substr(line.size());
   }
-  if (!quoteText.empty()) {
-    renderer.text.render(kFontSmall, 24, y, "\xC2\xB7 \xC2\xB7 \xC2\xB7", true);
-  }
+  const bool more = !quoteText.empty();
+  const int quoteLineH = renderer.text.getLineHeight(kFontQuote);
+  const int moreH = more ? renderer.text.getLineHeight(kFontSmall) + 6 : 0;
+  const int textBlockH = static_cast<int>(quoteLines.size()) * quoteLineH + moreH;
+  const int cardH = std::max(64, std::min(textBlockH + 30, cardBottom - cardTop));
 
-  // Book / chapter metadata.
-  const int metaTop = y + 24;
-  const std::string title = renderer.text.truncate(kFontBody, entry.bookTitle.c_str(), textW);
-  renderer.text.render(kFontBody, 24, metaTop, title.c_str(), true, EpdFontFamily::BOLD);
-  if (!entry.chapter.empty() && entry.chapter != "0") {
-    const std::string chapter = renderer.text.truncate(kFontSmall, entry.chapter.c_str(), textW);
-    renderer.text.render(kFontSmall, 24, metaTop + renderer.text.getLineHeight(kFontBody) + 4, chapter.c_str(), true);
+  renderer.rectangle.fill(cardX, cardTop, cardW, cardH, false, true);
+  renderer.rectangle.render(cardX, cardTop, cardW, cardH, true, true);
+  renderer.rectangle.fill(cardX, cardTop + 12, 4, std::max(10, cardH - 24), true);
+
+  int ty = cardTop + 14;
+  for (const std::string& line : quoteLines) {
+    renderer.text.render(kFontQuote, textLeft, ty, line.c_str(), true);
+    ty += quoteLineH;
+  }
+  if (more && ty + renderer.text.getLineHeight(kFontSmall) <= cardTop + cardH - 8) {
+    renderer.text.render(kFontSmall, textLeft, ty + 2, "\xC2\xB7 \xC2\xB7 \xC2\xB7", true);
   }
 
   // Bottom button row.
-  const int btnY = screenH - kBtnBottomInset - kBtnH;
   const int btnW = (screenW - 24 * 2 - kBtnGap * 3) / 4;
   prevBtn = {24, btnY, btnW, kBtnH};
   nextBtn = {24 + (btnW + kBtnGap), btnY, btnW, kBtnH};
@@ -208,6 +296,7 @@ void QuotesActivity::navigate(const int delta) {
     return;
   }
   currentIndex = (currentIndex + delta + static_cast<int>(quotes.size())) % static_cast<int>(quotes.size());
+  refreshCurrentMetadata();
   updateRequired = true;
 }
 

@@ -22,6 +22,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <functional>
+#include <mutex>
 #include <set>
 
 #include "../state/ReaderSetting.h"
@@ -29,6 +30,7 @@
 #ifndef INX_SIMULATOR_WEB_ONLY
 #include "activity/reader/Epub/EpubActivity.h"
 #include "activity/reader/Epub/EpubAnnotations.h"
+#include "activity/reader/HighlightPersistence.h"
 #endif
 #include "html/EpubPageHtml.generated.h"
 #include "html/EpubPageJs.generated.h"
@@ -390,7 +392,7 @@ struct ExportBookInfo {
   std::string coverPath;
 };
 
-ExportBookInfo exportBookInfoForCachePath(const std::string& cachePath) {
+ExportBookInfo exportBookInfoForCachePath(const std::string& cachePath, const std::vector<RecentBook>& recents) {
   ExportBookInfo info;
   BookMetadataCache metadata(cachePath);
   if (metadata.load()) {
@@ -398,8 +400,7 @@ ExportBookInfo exportBookInfoForCachePath(const std::string& cachePath) {
     info.author = metadata.coreMetadata.author;
   }
 
-  RECENT_BOOKS.loadFromFile();
-  for (const RecentBook& book : RECENT_BOOKS.getBooks()) {
+  for (const RecentBook& book : recents) {
     const std::string bookCache = book.cachePath.empty() ? epubCachePathForBookPath(book.path) : book.cachePath;
     if (bookCache == cachePath) {
       if (info.title.empty()) {
@@ -477,13 +478,13 @@ void writeExportNoteItem(FsFile& file, bool& first, int& total, const char* type
   row += "\",\"chapter\":\"";
   row += jsonEscape(chapter.c_str());
   row += "\",\"spine\":";
-  row += spine;
+  row += std::to_string(spine).c_str();
   row += ",\"page\":";
-  row += page;
+  row += std::to_string(page).c_str();
   row += ",\"pageCount\":";
-  row += pageCount;
+  row += std::to_string(pageCount).c_str();
   row += ",\"timestamp\":";
-  row += timestamp;
+  row += std::to_string(timestamp).c_str();
   row += ",\"text\":\"";
   row += jsonEscape(text.c_str());
   if (!pageText.empty()) {
@@ -495,6 +496,86 @@ void writeExportNoteItem(FsFile& file, bool& first, int& total, const char* type
   ++total;
 }
 
+/** True when `s` is empty or contains only ASCII digits (a spine number, not a chapter title). */
+bool isNumericChapter(const std::string& s) {
+  if (s.empty()) {
+    return true;
+  }
+  for (const char c : s) {
+    if (!std::isdigit(static_cast<unsigned char>(c))) {
+      return false;
+    }
+  }
+  return true;
+}
+
+/** Collapses whitespace + lowercases, matching the ANN3/quote normalizer used for dedup. */
+std::string exportNormalizeText(const std::string& text) {
+  std::string out;
+  bool pendingSpace = false;
+  for (const char c : text) {
+    if (std::isspace(static_cast<unsigned char>(c))) {
+      pendingSpace = !out.empty();
+    } else {
+      if (pendingSpace) {
+        out += ' ';
+        pendingSpace = false;
+      }
+      out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+  }
+  return out;
+}
+
+/**
+ * FNV-1a signature of the /highlights directory (json file names + sizes). The export index keeps
+ * this in its header so it rebuilds when quotes change even if no in-reader invalidate() ran (e.g.
+ * quotes added by the myT5S3-Reader fork while this firmware was off, or via another device).
+ */
+uint32_t highlightsSignature() {
+  uint32_t h = 2166136261u;
+  FsFile dir = SdMan.open("/highlights");
+  if (dir && dir.isDirectory()) {
+    char name[96] = {};
+    for (FsFile f = dir.openNextFile(); f; f = dir.openNextFile()) {
+      if (f.getName(name, sizeof(name)) && strstr(name, ".json")) {
+        for (const char* p = name; *p; ++p) {
+          h ^= static_cast<uint8_t>(*p);
+          h *= 16777619u;
+        }
+        const uint32_t sz = static_cast<uint32_t>(f.fileSize());
+        h ^= sz;
+        h *= 16777619u;
+      }
+      f.close();
+    }
+    dir.close();
+  }
+  return h;
+}
+
+/**
+ * Export metadata for a custom /highlights quote: prefers the book's cached metadata when the cache
+ * dir exists, otherwise falls back to the quote's own title (or the file stem for title-less books).
+ */
+ExportBookInfo exportBookInfoForHighlight(const HighlightEntry& entry, const std::string& cachePath,
+                                           const std::vector<RecentBook>& recents) {
+  ExportBookInfo info;
+  if (SdMan.exists(cachePath.c_str())) {
+    info = exportBookInfoForCachePath(cachePath, recents);
+  }
+  if (info.title.empty()) {
+    info.title = entry.bookTitle;
+  }
+  if (info.title.empty()) {
+    info.title = HighlightPersistence::defaultTitleForPath(entry.bookPath);
+  }
+  if (info.title.empty()) {
+    info.title = "Untitled book";
+  }
+  return info;
+}
+
 bool buildExportNotesIndex() {
   SdMan.mkdir("/.metadata");
   SdMan.mkdir("/.metadata/epub");
@@ -504,17 +585,25 @@ bool buildExportNotesIndex() {
     return false;
   }
 
+  // Snapshot the recents once: the export build can run on the web-server thread while the main
+  // loop mutates RECENT_BOOKS, so iterating the live vector (or re-loading it per entry, as the
+  // original code did) races and can yield corrupted strings in the exported JSON.
+  RECENT_BOOKS.loadFromFile();
+  const std::vector<RecentBook> recents = RECENT_BOOKS.getBooks();
+
   const std::vector<std::string> caches = epubCacheDirs();
   std::set<std::string> annotationKeys;
   bool first = true;
   int total = 0;
   String header = "{\"ok\":true,\"version\":";
-  header += EpubNotesIndex::kVersion;
+  header += std::to_string(EpubNotesIndex::kVersion).c_str();
+  header += ",\"sig\":";
+  header += std::to_string(highlightsSignature()).c_str();
   header += ",\"items\":[";
   writeFileString(index, header);
 
   for (const std::string& cachePath : caches) {
-    const ExportBookInfo book = exportBookInfoForCachePath(cachePath);
+    const ExportBookInfo book = exportBookInfoForCachePath(cachePath, recents);
     const std::string bookmarksPath = cachePath + "/bookmarks.bin";
     FsFile f;
     if (SdMan.openFileForRead("EXP", bookmarksPath, f)) {
@@ -557,10 +646,41 @@ bool buildExportNotesIndex() {
           const std::string pageText = bookmarkPreviewText(cachePath, startSpine, startPage);
           writeExportNoteItem(index, first, total, "annotation", book, "Highlight", startSpine, startPage, 0,
                               rec.timestamp, rec.text, pageText);
+          // Register the normalized-text key so the /highlights merge below does not duplicate it.
+          const std::string norm = exportNormalizeText(rec.text);
+          if (!norm.empty()) {
+            annotationKeys.insert(cachePath + "|" + norm);
+          }
         }
         yield();
       }
     }
+    yield();
+  }
+
+  // Custom highlight & quotes system (/highlights/*.json + *_pages.json masters): merge every quote
+  // so highlights from the myT5S3-Reader fork - and any quote the ANN3 relocation could not resolve
+  // (book never opened here, page not built, phrase mismatch) - still show up in the export.
+  const std::vector<HighlightEntry> quotes = HighlightPersistence::loadAllHighlights();
+  for (const HighlightEntry& e : quotes) {
+    if (e.selectedText.empty()) {
+      continue;
+    }
+    const std::string cachePath = epubCachePathForBookPath(e.bookPath);
+    const std::string norm = exportNormalizeText(e.selectedText);
+    if (norm.empty()) {
+      continue;
+    }
+    const std::string textKey = cachePath + "|" + norm;
+    if (annotationKeys.find(textKey) != annotationKeys.end()) {
+      continue;  // already exported via the ANN3 shards.
+    }
+    annotationKeys.insert(textKey);
+    const ExportBookInfo book = exportBookInfoForHighlight(e, cachePath, recents);
+    // Keep the real chapter title when the stored chapter is one; spine numbers become "Highlight"
+    // like the native annotation entries. Page is unknown for quotes the reader never re-located.
+    const std::string chapter = isNumericChapter(e.chapter) ? "Highlight" : e.chapter;
+    writeExportNoteItem(index, first, total, "annotation", book, chapter, 0, 0, 0, e.timestamp, e.selectedText);
     yield();
   }
 
@@ -576,15 +696,17 @@ bool exportNotesIndexIsCurrent() {
   if (!SdMan.openFileForRead("EXP", EpubNotesIndex::kPath, index)) {
     return false;
   }
-  char buf[96] = {};
+  char buf[160] = {};
   const int n = index.read(buf, sizeof(buf) - 1);
   index.close();
   if (n <= 0) {
     return false;
   }
-  String marker = "\"version\":";
-  marker += EpubNotesIndex::kVersion;
-  return strstr(buf, marker.c_str()) != nullptr;
+  String versionMarker = "\"version\":";
+  versionMarker += std::to_string(EpubNotesIndex::kVersion).c_str();
+  String sigMarker = "\"sig\":";
+  sigMarker += std::to_string(highlightsSignature()).c_str();
+  return strstr(buf, versionMarker.c_str()) != nullptr && strstr(buf, sigMarker.c_str()) != nullptr;
 }
 
 void webLibraryIndexTask(void*) {
@@ -1084,6 +1206,11 @@ void LocalServer::handleExportNotesData() const {
     EpubNotesIndex::invalidate();
   }
 
+  // The sim's web server handles each request on its own thread while the main loop still runs;
+  // serialize the (re)build so two concurrent requests cannot tear the index file or race the
+  // recents snapshot.
+  static std::mutex exportMutex;
+  std::lock_guard<std::mutex> exportLock(exportMutex);
   if (!exportNotesIndexIsCurrent()) {
     EpubNotesIndex::invalidate();
   }
