@@ -49,6 +49,24 @@ class EpubAnnotations {
   /** Whether the on-disk shard exists for this page (ground truth for saved highlights). */
   bool pageShardExists(const std::string& cachePath, int spine, int page) const;
 
+  /**
+   * Sweeps every shard of the book and removes records matching `text` (exact normalized match,
+   * with the same containment fallback as removeHighlightOnPage). Rewrites or deletes changed
+   * shards and invalidates the export index. Returns true if at least one record was removed.
+   * This is what the Quotes-browser delete uses - it does not know the exact (spine, page).
+   */
+  static bool removeHighlightFromAllPages(const std::string& cachePath, const std::string& text);
+
+  /**
+   * Reconciles the book's per-page shards against the durable /highlights quote list: any shard
+   * record whose normalized text no longer exists in `quotes` is dropped (deleted via the Quotes
+   * browser, a failed save, or plain drift), so the shards stay purely derived from /highlights.
+   * Returns true if any shard changed. Called once per book open, with the same quote list the
+   * importer uses.
+   */
+  static bool reconcileShardsWithQuotes(const std::string& cachePath,
+                                        const std::vector<HighlightEntry>& quotes);
+
   const std::vector<EpubAnnotationRecord>& records() const { return records_; }
 
   /** Enumerate touched pages, append record to each shard. Returns false if no write succeeded. */

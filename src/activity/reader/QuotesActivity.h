@@ -4,7 +4,7 @@
  * @file QuotesActivity.h
  * @brief Browser for the T5S3 reader's custom highlight/quotes system.
  *
- * Shows the saved quotes (from /highlights/*.json, the same format the
+ * Shows the saved quotes (from the /highlights JSON files, the same format the
  * user's T5S3 reader fork writes) one at a time, with prev/next navigation,
  * delete, and jump-to-book. Touch-first on the T5S3 port.
  */

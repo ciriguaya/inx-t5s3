@@ -25,7 +25,6 @@ namespace {
 constexpr int kBtnH = 56;
 constexpr int kBtnGap = 14;
 constexpr int kBtnBottomInset = 26;
-constexpr int kFontQuote = ATKINSON_HYPERLEGIBLE_14_FONT_ID;
 constexpr int kFontBody = ATKINSON_HYPERLEGIBLE_12_FONT_ID;
 constexpr int kFontSmall = ATKINSON_HYPERLEGIBLE_10_FONT_ID;
 constexpr int kFontTitle = ATKINSON_HYPERLEGIBLE_16_FONT_ID;
@@ -228,7 +227,7 @@ void QuotesActivity::render() {
   const int marginX = cardX + 14;
   renderer.line.render(marginX, cardTop + 8, marginX, cardBottom - 8, true);
 
-  const int pageFont = kFontSmall;
+  const int pageFont = kFontBody;  // page content, one scale up from the old 10pt for readability
   const int textX = marginX + 10;
   const int pageTextW = cardX + cardW - textX - 16;
   const int lineH = renderer.text.getLineHeight(pageFont);
@@ -486,10 +485,11 @@ void QuotesActivity::confirmDelete() {
     return;
   }
 
-  // Remove the quote from every store it may live in (the derived /highlights/<book>.json and the
-  // fork's *_pages.json master). The displayed title can differ from the on-disk file stems (case,
-  // "(N)" suffixes), so match through the same candidate list the importer uses - a plain
-  // sanitizeFilename(bookTitle) lookup silently misses those and the quote would come right back.
+  // Remove the quote from every store it may live in: the ANN3 shards (so the highlight disappears
+  // from the book too), the derived /highlights/<book>.json, and the fork's *_pages.json master.
+  // The displayed title can differ from the on-disk file stems (case, "(N)" suffixes), so match
+  // through the same candidate list the importer uses - a plain sanitizeFilename(bookTitle) lookup
+  // silently misses those and the quote would come right back.
   const std::vector<std::string> candidates =
       HighlightPersistence::bookTitleCandidates(entry->bookTitle, entry->bookPath);
   HighlightPersistence::deleteHighlight(candidates, entry->chapter, entry->chapter, entry->selectedText);
@@ -498,6 +498,13 @@ void QuotesActivity::confirmDelete() {
   // master and the quote would resurrect on the next merge.
   for (const std::string& cand : candidates) {
     HighlightPersistence::deleteFromPagesMaster(cand, entry->selectedText);
+  }
+  // Sweep the quote out of the book's per-page ANN3 shards so it is gone from the book as well as
+  // from the browser (the browser does not know the exact spine/page, so it matches by text).
+  if (!entry->bookPath.empty()) {
+    const std::string cachePath =
+        "/.metadata/epub/" + std::to_string(std::hash<std::string>{}(entry->bookPath));
+    EpubAnnotations::removeHighlightFromAllPages(cachePath, entry->selectedText);
   }
 
   loadAllQuotes();

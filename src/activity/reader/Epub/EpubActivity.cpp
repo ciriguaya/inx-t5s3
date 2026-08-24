@@ -413,6 +413,12 @@ void EpubActivity::ensureImportQuotesLoaded() {
   if (!importQuotes_.empty()) {
     Serial.printf("[EPA] Importing %d stored quotes for this book\n", static_cast<int>(importQuotes_.size()));
   }
+  // Make the per-page shards purely derived from /highlights: drop any shard record whose text is
+  // no longer in the durable quote store (deleted via the Quotes browser, a failed save, or drift)
+  // so a stale record can never resurrect a deleted highlight.
+  if (EpubAnnotations::reconcileShardsWithQuotes(epub->getCachePath(), importQuotes_)) {
+    Serial.printf("[EPA] Reconcile: removed stale shard records\n");
+  }
   // Record the book path in the quote stores so the Quotes browser can later resolve where each
   // quote lives (the fork's *_pages.json masters carry no path). Cheap no-op once patched.
   HighlightPersistence::ensureQuoteBookPaths(titleCandidates, epub->getPath());

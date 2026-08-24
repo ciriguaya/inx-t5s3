@@ -99,6 +99,76 @@ std::string pageShardPath(const std::string& cachePath, int spine, int page) {
   return cachePath + buf;
 }
 
+/**
+ * Drops records whose normalized text matches `target` from `recs` (exact normalized-text match
+ * first; a whole-phrase containment fallback for substantial texts >= 4 chars, so a repagination
+ * that shifted the extracted range by a word or two still deletes the intended highlight without
+ * nuking short words like "the" that appear inside other highlights). On success `recs` is left
+ * with the kept records. Returns true if any record was dropped.
+ */
+bool dropMatchingRecords(std::vector<EpubAnnotationRecord>& recs, const std::string& target) {
+  auto normalize = [](std::string s) {
+    std::string out;
+    out.reserve(s.size());
+    bool pendingSpace = false;
+    for (const char c : s) {
+      if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
+        pendingSpace = !out.empty();
+        continue;
+      }
+      if (pendingSpace) {
+        out += ' ';
+        pendingSpace = false;
+      }
+      out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
+    }
+    return out;
+  };
+  const std::string normTarget = normalize(target);
+  if (normTarget.empty()) {
+    return false;
+  }
+  std::vector<const EpubAnnotationRecord*> exact;
+  for (const auto& r : recs) {
+    if (!r.text.empty() && normalize(r.text) == normTarget) {
+      exact.push_back(&r);
+    }
+  }
+  std::vector<EpubAnnotationRecord> kept;
+  bool removed = false;
+  if (!exact.empty()) {
+    for (const auto& r : recs) {
+      const bool drop = !r.text.empty() && std::find(exact.begin(), exact.end(), &r) != exact.end();
+      if (drop) {
+        removed = true;
+      } else {
+        kept.push_back(r);
+      }
+    }
+  } else {
+    for (const auto& r : recs) {
+      if (r.text.empty()) {
+        kept.push_back(r);
+        continue;
+      }
+      const std::string rt = normalize(r.text);
+      const bool contained =
+          rt.size() >= 4 && normTarget.size() >= 4 &&
+          (rt.find(normTarget) != std::string::npos || normTarget.find(rt) != std::string::npos);
+      if (contained) {
+        removed = true;
+      } else {
+        kept.push_back(r);
+      }
+    }
+  }
+  if (!removed) {
+    return false;
+  }
+  recs.swap(kept);
+  return true;
+}
+
 bool readSectionPageCount(const std::string& cachePath, int spineIndex, uint16_t* outCount) {
   if (!outCount) {
     return false;
@@ -355,72 +425,13 @@ bool EpubAnnotations::removeHighlightOnPage(const std::string& cachePath, const 
     return false;
   }
 
-  const std::string target = text;  // exact stored-text match; see below for word-range fallback
-  auto normalize = [](std::string s) {
-    std::string out;
-    out.reserve(s.size());
-    bool pendingSpace = false;
-    for (const char c : s) {
-      if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
-        pendingSpace = !out.empty();
-        continue;
-      }
-      if (pendingSpace) {
-        out += ' ';
-        pendingSpace = false;
-      }
-      out += static_cast<char>(std::tolower(static_cast<unsigned char>(c)));
-    }
-    return out;
-  };
-  const std::string normTarget = normalize(target);
-
-  std::vector<EpubAnnotationRecord> kept;
-  bool removed = false;
-  std::vector<const EpubAnnotationRecord*> exact;
-  for (const auto& r : recs) {
-    if (!r.text.empty() && normalize(r.text) == normTarget) {
-      exact.push_back(&r);
-    }
-  }
-  if (!exact.empty()) {
-    for (const auto& r : recs) {
-      const bool drop =
-          !r.text.empty() && std::find(exact.begin(), exact.end(), &r) != exact.end();
-      if (drop) {
-        removed = true;
-      } else {
-        kept.push_back(r);
-      }
-    }
-  } else {
-    // Repagination can change the extracted range by a word or two at the edges; fall back to a
-    // whole-phrase containment match, but only for substantial texts (>= 4 chars) to avoid nuking
-    // short words like "the" that happen to appear inside another highlight.
-    for (const auto& r : recs) {
-      if (r.text.empty()) {
-        kept.push_back(r);
-        continue;
-      }
-      const std::string rt = normalize(r.text);
-      const bool contained =
-          rt.size() >= 4 && normTarget.size() >= 4 &&
-          (rt.find(normTarget) != std::string::npos || normTarget.find(rt) != std::string::npos);
-      if (contained) {
-        removed = true;
-      } else {
-        kept.push_back(r);
-      }
-    }
-  }
-
-  if (!removed) {
+  if (!dropMatchingRecords(recs, text)) {
     return false;
   }
-  if (kept.empty()) {
+  if (recs.empty()) {
     SdMan.remove(path.c_str());
   } else {
-    writeAnn3(path, kept);
+    writeAnn3(path, recs);
   }
   EpubNotesIndex::invalidate();
   // Refresh the in-memory page cache (a stale record would re-appear on the next page draw).
@@ -957,4 +968,100 @@ void EpubAnnotations::importQuoteHighlights(const std::string& cachePath, const 
       }
     }
   }
+}
+
+bool EpubAnnotations::removeHighlightFromAllPages(const std::string& cachePath, const std::string& text) {
+  if (text.empty()) {
+    return false;
+  }
+  const std::string annDir = cachePath + "/" + std::string(kSubdir);
+  if (!SdMan.exists(annDir.c_str())) {
+    return false;
+  }
+  std::vector<String> files = SdMan.listFiles(annDir.c_str());
+  bool anyChanged = false;
+  for (const String& f : files) {
+    int s = 0;
+    int p = 0;
+    if (std::sscanf(f.c_str(), "s_%d_p_%d.bin", &s, &p) != 2) {
+      continue;
+    }
+    const std::string path = annDir + "/" + f.c_str();
+    std::vector<EpubAnnotationRecord> recs;
+    if (!loadAnn3(path, recs) || recs.empty()) {
+      continue;
+    }
+    if (!dropMatchingRecords(recs, text)) {
+      continue;
+    }
+    if (recs.empty()) {
+      SdMan.remove(path.c_str());
+    } else {
+      writeAnn3(path, recs);
+    }
+    anyChanged = true;
+    yield();
+  }
+  if (anyChanged) {
+    EpubNotesIndex::invalidate();
+  }
+  return anyChanged;
+}
+
+bool EpubAnnotations::reconcileShardsWithQuotes(const std::string& cachePath,
+                                                const std::vector<HighlightEntry>& quotes) {
+  const std::string annDir = cachePath + "/" + std::string(kSubdir);
+  if (!SdMan.exists(annDir.c_str())) {
+    return false;
+  }
+  // The set of texts that are allowed to exist in the shards: everything in the durable
+  // /highlights store for this book. Empty-text records are kept (never delete data we can't
+  // match); everything else that is not in the set is drift and is dropped.
+  std::vector<std::string> keepTexts;
+  for (const HighlightEntry& q : quotes) {
+    const std::string t = normalizedHighlightText(q.selectedText);
+    if (!t.empty() && std::find(keepTexts.begin(), keepTexts.end(), t) == keepTexts.end()) {
+      keepTexts.push_back(t);
+    }
+  }
+  std::vector<String> files = SdMan.listFiles(annDir.c_str());
+  bool anyChanged = false;
+  for (const String& f : files) {
+    int s = 0;
+    int p = 0;
+    if (std::sscanf(f.c_str(), "s_%d_p_%d.bin", &s, &p) != 2) {
+      continue;
+    }
+    const std::string path = annDir + "/" + f.c_str();
+    std::vector<EpubAnnotationRecord> recs;
+    if (!loadAnn3(path, recs) || recs.empty()) {
+      continue;
+    }
+    std::vector<EpubAnnotationRecord> kept;
+    bool changed = false;
+    for (const auto& r : recs) {
+      const std::string t = normalizedHighlightText(r.text);
+      const bool keep = t.empty() ||
+                        std::find(keepTexts.begin(), keepTexts.end(), t) != keepTexts.end();
+      if (keep) {
+        kept.push_back(r);
+      } else {
+        changed = true;
+      }
+    }
+    if (!changed) {
+      continue;
+    }
+    if (kept.empty()) {
+      SdMan.remove(path.c_str());
+    } else {
+      writeAnn3(path, kept);
+    }
+    anyChanged = true;
+    yield();
+  }
+  if (anyChanged) {
+    EpubNotesIndex::invalidate();
+  }
+  return anyChanged;
 }
